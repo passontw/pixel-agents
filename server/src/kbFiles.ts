@@ -33,6 +33,7 @@ import {
   KB_IO_REASON,
   KB_PROPOSAL_SUFFIX,
   KB_PROPOSALS_DIR_NAME,
+  KB_SETTINGS_FILE_MAX_BYTES,
   KB_SETTINGS_FILE_NAME,
   KB_STORAGE_DIR_NAME,
   KB_UNSAFE_STORAGE_REASON,
@@ -40,10 +41,12 @@ import {
   ROLES_STORAGE_DIR_MODE,
   ROLES_STORAGE_FILE_MODE,
 } from './constants.js';
+import { isValidWorkspaceId } from './kbIds.js';
 import {
   checkPrivateDirectory,
   ensurePrivateDirectory,
   errnoCode,
+  isPrivateDirectory,
   StorageUnsafeError,
 } from './privateStorage.js';
 
@@ -236,6 +239,65 @@ export async function readBoundedFile(filePath: string, maxBytes: number): Promi
     return { state: 'error', errno: errnoCode(err) };
   } finally {
     await handle.close().catch(() => undefined);
+  }
+}
+
+// ── Synchronous settings read (the launch-time KB check) ────
+
+/** lstat-based and synchronous: a private directory, or (when not required)
+ *  nothing at all. Any other answer, an lstat error included, is false. */
+function privateDirectorySync(dirPath: string, required: boolean): boolean {
+  let stats: fs.Stats;
+  try {
+    stats = fs.lstatSync(dirPath);
+  } catch (err) {
+    return !required && errnoCode(err) === 'ENOENT';
+  }
+  return isPrivateDirectory(stats);
+}
+
+/**
+ * The parsed JSON of a Workspace's settings.json, read synchronously (an agent
+ * launch is synchronous), or undefined on any doubt. The same rules as
+ * KbStore.readSettings: POSIX only; the KB root and <ws>/ must exist and be
+ * private (real directory, owned by us, mode 0700), and blobs/ and proposals/
+ * must be private when present; the file is opened O_NOFOLLOW|O_NONBLOCK and
+ * must be a plain file of at most KB_SETTINGS_FILE_MAX_BYTES of strict UTF-8
+ * JSON. Never creates anything.
+ */
+export function readSettingsJsonSync(paths: KbPaths, ws: string): unknown {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') return undefined;
+  if (!isValidWorkspaceId(ws)) return undefined;
+  if (!privateDirectorySync(paths.root, true)) return undefined;
+  if (!privateDirectorySync(paths.workspaceDir(ws), true)) return undefined;
+  if (!privateDirectorySync(paths.blobsDir(ws), false)) return undefined;
+  if (!privateDirectorySync(paths.proposalsDir(ws), false)) return undefined;
+  let fd: number;
+  try {
+    fd = fs.openSync(paths.settingsFile(ws), READ_FLAGS);
+  } catch {
+    return undefined;
+  }
+  try {
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile() || stats.size > KB_SETTINGS_FILE_MAX_BYTES) return undefined;
+    const buffer = Buffer.alloc(KB_SETTINGS_FILE_MAX_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const bytesRead = fs.readSync(fd, buffer, total, buffer.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > KB_SETTINGS_FILE_MAX_BYTES) return undefined;
+    return parseJsonStrict(buffer.subarray(0, total));
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Nothing to recover: the read is already decided.
+    }
   }
 }
 

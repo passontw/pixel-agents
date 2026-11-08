@@ -131,11 +131,12 @@ export class KbHarness {
         },
         capabilities: input.withoutRegistry ? undefined : this.capabilities,
         isKbEnabled: kb === undefined ? undefined : typeof kb === 'function' ? kb : () => kb,
+        kb: { mcpBaseUrl: () => HARNESS_MCP_BASE_URL },
       },
       { directoryPath: input.directoryPath },
     );
     const spawn = this.spawned.length > before ? this.spawned[this.spawned.length - 1] : undefined;
-    return { id, spawn, token: spawn?.options.env?.[CAPABILITY_ENV_NAME] };
+    return { id, spawn, token: capabilityTokenOf(spawn?.options.env) };
   }
 
   ctx(overrides: Partial<ClientMessageContext> = {}): ClientMessageContext {
@@ -148,6 +149,7 @@ export class KbHarness {
       capabilities: this.capabilities,
       curators: this.curators,
       isKbEnabled: () => true,
+      kb: { mcpBaseUrl: () => HARNESS_MCP_BASE_URL, voidWorkspaceProposals: async () => {} },
       ...overrides,
     };
   }
@@ -173,4 +175,26 @@ export class KbHarness {
     else process.env.HOME = this.originalHome;
     fs.rmSync(this.tempHome, { recursive: true, force: true });
   }
+}
+
+/** The MCP base URL every harness launch is given (nothing listens there). */
+export const HARNESS_MCP_BASE_URL = 'http://127.0.0.1:1';
+
+/** The capability variable name a launch picks: PIXEL_AGENTS_CAP_<8 HEX>. */
+export const CAPABILITY_ENV_KEY = /^PIXEL_AGENTS_CAP_[0-9A-F]{8}$/;
+
+/**
+ * The capability in a spawn's environment: the value of its one randomly named
+ * variable, or undefined when there is none. Throws when the S2 fixed name is
+ * still there or when there are two, since either would mean the launcher
+ * stopped stripping inherited capabilities.
+ */
+export function capabilityTokenOf(env: Record<string, string> | undefined): string | undefined {
+  if (!env) return undefined;
+  if (Object.prototype.hasOwnProperty.call(env, CAPABILITY_ENV_NAME)) {
+    throw new Error('the S2 capability variable reached a PTY environment');
+  }
+  const keys = Object.keys(env).filter((key) => CAPABILITY_ENV_KEY.test(key));
+  if (keys.length > 1) throw new Error('more than one capability variable in a PTY environment');
+  return keys.length === 1 ? env[keys[0]] : undefined;
 }

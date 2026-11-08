@@ -6,7 +6,7 @@ import Fastify from 'fastify';
 
 import type { AgentRuntime } from './agentRuntime.js';
 import type { AgentStateStore } from './agentStateStore.js';
-import type { CapabilityRegistry } from './capabilities.js';
+import type { CapabilityClaims, CapabilityRegistry } from './capabilities.js';
 import type {
   AssetCache,
   ReloadAssetsSideEffect,
@@ -15,11 +15,24 @@ import type {
 import { handleClientMessage } from './clientMessageHandler.js';
 import {
   HOOK_API_PREFIX,
+  KB_MCP_BAD_REQUEST_BODY,
+  KB_MCP_BODY_LIMIT,
+  KB_MCP_FORBIDDEN_BODY,
+  KB_MCP_METHOD_NOT_ALLOWED_BODY,
+  KB_MCP_METHODS,
+  KB_MCP_NOT_FOUND_BODY,
+  KB_MCP_OAUTH_PATHS,
+  KB_MCP_PATH,
+  KB_MCP_TOO_LARGE_BODY,
+  KB_MCP_UNAUTHORIZED_BODY,
+  KB_MCP_UNSUPPORTED_MEDIA_BODY,
   MAX_HOOK_BODY_SIZE,
   WS_CLOSE_FORBIDDEN_ORIGIN,
   WS_CLOSE_UNAUTHORIZED,
 } from './constants.js';
 import type { CuratorTable } from './curators.js';
+import { KbMcpEndpoint, mcpRequestForbidden } from './kbMcp.js';
+import type { KbRuntime } from './kbRuntime.js';
 import type { PtySessionManager } from './terminal/ptySessionManager.js';
 import { registerTerminalRoutes } from './terminal/terminalRoutes.js';
 import type { AgentState } from './types.js';
@@ -65,6 +78,22 @@ export interface HttpServerOptions {
    *  privileged standalone handshake may arrive under -- e.g. a reverse proxy's
    *  public name. See wsAuth.privilegedHostnames. */
   allowedHosts?: readonly string[];
+  /** The Knowledge Base host (standalone only). With a capability registry it
+   *  also enables POST /mcp. */
+  kb?: KbRuntime;
+  /** Whether a launch into a Workspace gets a capability (kb.isKbEnabled).
+   *  Handed to every client message context. */
+  isKbEnabled?: (workspaceId: string) => boolean;
+  /** Tests only: the /mcp endpoint to serve (otherwise built from kb). */
+  mcpEndpoint?: KbMcpEndpoint;
+}
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** The verified capability of an /mcp request, set by the root onRequest
+     *  guard; null on every other request. */
+    kbMcpClaims: CapabilityClaims | null;
+  }
 }
 
 /** Result of createHttpServer(). */
@@ -90,6 +119,11 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
     logger: options.embedded ? false : { serializers: { req: serializeRequestForLog } },
     bodyLimit: MAX_HOOK_BODY_SIZE,
   });
+
+  // The /mcp guard is a ROOT onRequest hook added before CORS, so it runs
+  // before @fastify/cors can answer a preflight or add a header.
+  const mcp = mcpEndpointFor(options);
+  if (mcp) registerMcpGuard(app, mcp);
 
   await app.register(fastifyCors, { origin: true });
   await app.register(fastifyWebsocket);
@@ -119,6 +153,7 @@ export async function createHttpServer(options: HttpServerOptions): Promise<Http
     allowedHostnames,
     ptyManager: options.ptyManager,
   });
+  if (mcp) await registerMcpRoutes(app, mcp);
 
   // ── Listen ──────────────────────────────────────────────────
 
@@ -271,6 +306,8 @@ function registerWebSocketRoute(
           ptyManager: options.ptyManager,
           capabilities: options.capabilities,
           curators: options.curators,
+          isKbEnabled: options.isKbEnabled,
+          kb: options.kb,
         });
       } catch {
         // Malformed JSON, ignore
@@ -282,6 +319,124 @@ function registerWebSocketRoute(
       store.off('agentRemoved', onAgentRemoved);
       store.off('broadcast', onBroadcast);
     });
+  });
+}
+
+// ── Knowledge Base MCP ─────────────────────────────────────────
+
+/** Standalone with a KB host and a capability registry; never embedded. */
+function mcpEndpointFor(options: HttpServerOptions): KbMcpEndpoint | undefined {
+  if (options.embedded) return undefined;
+  if (options.mcpEndpoint) return options.mcpEndpoint;
+  if (!options.kb || !options.capabilities) return undefined;
+  return new KbMcpEndpoint({
+    capabilities: options.capabilities,
+    store: options.kb.store,
+    instance: options.kb.instance,
+    version: process.env.PIXEL_AGENTS_VERSION,
+  });
+}
+
+function isMcpRoute(url: string | undefined): boolean {
+  return url === KB_MCP_PATH || url === `${KB_MCP_PATH}/*`;
+}
+
+/**
+ * The root onRequest guard. Decided on the ROUTE the router matched
+ * (routeOptions.url), never on request.url, so `/%6Dcp` and an absolute-form
+ * target reach it exactly like `/mcp`. Headers only: a refused request's body
+ * is never read. 403 for the network checks (defence in depth), then 401
+ * unless the Authorization header carries a live capability -- for every
+ * message, initialize and notifications included.
+ */
+function registerMcpGuard(app: FastifyInstance, mcp: KbMcpEndpoint): void {
+  app.decorateRequest('kbMcpClaims', null);
+  app.addHook('onRequest', async (request, reply) => {
+    if (!isMcpRoute(request.routeOptions.url)) return;
+    if (
+      mcpRequestForbidden({
+        rawHeaders: request.raw.rawHeaders,
+        remoteAddress: request.socket.remoteAddress,
+      })
+    ) {
+      return reply.code(403).send(KB_MCP_FORBIDDEN_BODY);
+    }
+    const claims = mcp.authenticate(request.raw.rawHeaders);
+    if (!claims) return reply.code(401).send(KB_MCP_UNAUTHORIZED_BODY);
+    request.kbMcpClaims = claims;
+  });
+}
+
+/** The content type of a request, without parameters, lower-cased. */
+function mediaType(request: FastifyRequest): string {
+  return (request.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+}
+
+/**
+ * POST /mcp and its neighbours, in their own encapsulated scope so the JSON
+ * parser, the 256 KiB body limit and the error replies here change nothing for
+ * /api/hooks or any other route. Every method is registered, so neither the
+ * static GET /* nor the CORS OPTIONS * can answer for /mcp; `cors: false`
+ * keeps @fastify/cors off these routes entirely.
+ */
+async function registerMcpRoutes(app: FastifyInstance, mcp: KbMcpEndpoint): Promise<void> {
+  await app.register(async (scope) => {
+    scope.removeContentTypeParser('application/json');
+    scope.addContentTypeParser('application/json', { parseAs: 'string' }, (_request, body, done) =>
+      done(null, mcp.parseBody(body as string)),
+    );
+    // Fixed replies only: a framework error message can quote the input.
+    scope.setErrorHandler((error: { statusCode?: number }, _request, reply) => {
+      if (error.statusCode === 413) return reply.code(413).send(KB_MCP_TOO_LARGE_BODY);
+      if (error.statusCode === 415) return reply.code(415).send(KB_MCP_UNSUPPORTED_MEDIA_BODY);
+      return reply.code(400).send(KB_MCP_BAD_REQUEST_BODY);
+    });
+    // After the guard, before any body is read.
+    scope.addHook('preParsing', async (request, reply) => {
+      if (!isMcpRoute(request.routeOptions.url)) return;
+      if (request.routeOptions.url !== KB_MCP_PATH) {
+        return reply.code(404).send(KB_MCP_NOT_FOUND_BODY);
+      }
+      if (request.method !== 'POST') {
+        return reply.code(405).header('Allow', 'POST').send(KB_MCP_METHOD_NOT_ALLOWED_BODY);
+      }
+      if (mediaType(request) !== 'application/json') {
+        return reply.code(415).send(KB_MCP_UNSUPPORTED_MEDIA_BODY);
+      }
+    });
+
+    const config = { cors: false };
+    scope.route({
+      method: [...KB_MCP_METHODS],
+      url: KB_MCP_PATH,
+      bodyLimit: KB_MCP_BODY_LIMIT,
+      config,
+      handler: async (request, reply) => {
+        const claims = request.kbMcpClaims;
+        // Unreachable past the guard; refused rather than assumed.
+        if (!claims) return reply.code(401).send(KB_MCP_UNAUTHORIZED_BODY);
+        const result = await mcp.handle(claims, request.body);
+        if (result.body === undefined) return reply.code(result.status).send();
+        return reply.code(result.status).type('application/json').send(result.body);
+      },
+    });
+    scope.route({
+      method: [...KB_MCP_METHODS],
+      url: `${KB_MCP_PATH}/*`,
+      config,
+      handler: async (_request, reply) => reply.code(404).send(KB_MCP_NOT_FOUND_BODY),
+    });
+    // An MCP client that got a 401 may look for OAuth here; it must find
+    // nothing, not the SPA's index.html. Answered before any body is read.
+    for (const url of KB_MCP_OAUTH_PATHS) {
+      scope.route({
+        method: [...KB_MCP_METHODS],
+        url,
+        config,
+        onRequest: async (_request, reply) => reply.code(404).send(KB_MCP_NOT_FOUND_BODY),
+        handler: async (_request, reply) => reply.code(404).send(KB_MCP_NOT_FOUND_BODY),
+      });
+    }
   });
 }
 

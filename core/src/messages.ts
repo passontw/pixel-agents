@@ -401,6 +401,7 @@ export interface CuratorsLoaded {
   type: 'curatorsLoaded';
   available: boolean;
   curators: CuratorEntry[];
+  kbWorkspaceIds: string[];
 }
 
 export interface CuratorEntry {

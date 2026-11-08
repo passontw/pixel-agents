@@ -101,6 +101,8 @@ describe('VS Code surface: curators and capabilities', () => {
     expect(sentTexts).toHaveLength(2);
     for (const text of sentTexts) {
       expect(text).not.toContain(CAPABILITY_ENV_NAME);
+      expect(text).not.toContain('PIXEL_AGENTS_CAP_');
+      expect(text).not.toContain('--mcp-config');
       expect(text).not.toContain('pxa_kb_');
     }
     expect(terminalOptions).toHaveLength(2);

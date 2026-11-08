@@ -20,6 +20,7 @@ import {
 } from './constants.js';
 import type { CuratorTable } from './curators.js';
 import { createHttpServer } from './httpServer.js';
+import type { KbRuntime } from './kbRuntime.js';
 import type { ServerConfig, StandaloneAccess } from './serverConfig.js';
 import { isServerConfig, isServerTarget, sameStandaloneAccess } from './serverConfig.js';
 import { loadOrCreateStandaloneToken } from './serverToken.js';
@@ -80,6 +81,10 @@ export class PixelAgentsServer {
     curators?: CuratorTable;
     /** Extra privileged Host names (standalone; see wsAuth.privilegedHostnames). */
     allowedHosts?: readonly string[];
+    /** The Knowledge Base host and its launch predicate (standalone; enables
+     *  POST /mcp when capabilities are given too). */
+    kb?: KbRuntime;
+    isKbEnabled?: (workspaceId: string) => boolean;
     /** Replace the persisted standalone token, revoking every URL that carried
      *  the old one. Refused while another standalone server is running: it
      *  would keep honouring the old token until it restarts. */
@@ -151,6 +156,8 @@ export class PixelAgentsServer {
       capabilities: options?.capabilities,
       curators: options?.curators,
       allowedHosts: standalone?.allowedHosts,
+      kb: options?.kb,
+      isKbEnabled: options?.isKbEnabled,
     });
 
     this.app = app;

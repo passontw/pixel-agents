@@ -991,12 +991,15 @@ components:
       description: >-
         Sent to this client only during the handshake, after
         `workspacesLoaded`. `available` is true only on a standalone host with
-        a runtime, a terminal manager and a capability registry; the client
-        shows curator controls only when it is true and the office is not
-        read-only. `curators` is empty when unavailable.
+        a runtime, a terminal manager and a capability registry, and with at
+        least one Workspace whose Knowledge Base is on; the client shows
+        curator controls only when it is true, the office is not read-only,
+        and the agent's Workspace is in `kbWorkspaceIds`. `curators` and
+        `kbWorkspaceIds` are empty when unavailable. A change to a
+        Workspace's KB setting shows on the next handshake.
       type: object
       additionalProperties: false
-      required: [type, available, curators]
+      required: [type, available, curators, kbWorkspaceIds]
       properties:
         type:
           const: curatorsLoaded
@@ -1006,6 +1009,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CuratorEntry'
+        kbWorkspaceIds:
+          description: >-
+            The Workspaces whose Knowledge Base is on: `default` first when it
+            is on, then the others in workspace-list order, each once.
+          type: array
+          items:
+            type: string
 
     WorkspaceCuratorChanged:
       description: >-

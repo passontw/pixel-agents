@@ -7,10 +7,17 @@ import { DEFAULT_WORKSPACE_ID } from '../../core/src/constants.js';
 import { createAgentState } from '../src/agentState.js';
 import { AgentStateStore } from '../src/agentStateStore.js';
 import { CapabilityRegistry, withoutCapabilityEnv } from '../src/capabilities.js';
-import { CAPABILITY_ENV_NAME, TERMINAL_TERM_NAME } from '../src/constants.js';
+import {
+  CAPABILITY_ENV_NAME,
+  KB_ALLOWED_TOOLS_FLAG,
+  KB_MCP_CONFIG_FLAG,
+  KB_MCP_NO_PROXY_KEYS,
+  TERMINAL_TERM_NAME,
+} from '../src/constants.js';
 import { CuratorTable } from '../src/curators.js';
 import { claudeProvider } from '../src/providers/hook/claude/claude.js';
 import { PtySessionManager } from '../src/terminal/ptySessionManager.js';
+import { listWorkspaces } from '../src/workspaces.js';
 import { KbHarness } from './curatorHarness.js';
 
 /**
@@ -31,14 +38,36 @@ function argvShape(args: string[], sessionId: string): string[] {
   return args.map((arg) => (arg === sessionId ? '<session>' : arg));
 }
 
+/** The one PTY env key that matches the per-launch capability name. */
+function capabilityKeyOf(env: Record<string, string>): string {
+  const keys = Object.keys(env).filter((key) => /^PIXEL_AGENTS_CAP_[0-9A-F]{8}$/.test(key));
+  expect(keys).toHaveLength(1);
+  return keys[0];
+}
+
+/** argv without the trailing KB flags (--mcp-config <json> --allowedTools <4 names>). */
+function withoutKbFlags(args: string[]): string[] {
+  const at = args.indexOf(KB_MCP_CONFIG_FLAG);
+  expect(at).toBeGreaterThanOrEqual(0);
+  expect(args[at + 2]).toBe(KB_ALLOWED_TOOLS_FLAG);
+  expect(args).toHaveLength(at + 7);
+  return args.slice(0, at);
+}
+
+/** Leftover capability variables a parent agent could hand the server. */
+const LEFTOVER_CAP_KEY = 'PIXEL_AGENTS_CAP_DEADBEEF';
+
 describe('capabilities', () => {
   let h: KbHarness;
   let savedLeftover: string | undefined;
+  let savedLeftoverCap: string | undefined;
 
   beforeEach(() => {
     h = new KbHarness();
     savedLeftover = process.env[CAPABILITY_ENV_NAME];
+    savedLeftoverCap = process.env[LEFTOVER_CAP_KEY];
     delete process.env[CAPABILITY_ENV_NAME];
+    delete process.env[LEFTOVER_CAP_KEY];
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -49,6 +78,8 @@ describe('capabilities', () => {
     vi.useRealTimers();
     if (savedLeftover === undefined) delete process.env[CAPABILITY_ENV_NAME];
     else process.env[CAPABILITY_ENV_NAME] = savedLeftover;
+    if (savedLeftoverCap === undefined) delete process.env[LEFTOVER_CAP_KEY];
+    else process.env[LEFTOVER_CAP_KEY] = savedLeftoverCap;
     h.dispose();
   });
 
@@ -97,18 +128,29 @@ describe('capabilities', () => {
       expect(asked).toEqual([ws.id, DEFAULT_WORKSPACE_ID]);
     });
 
-    it('spawns the same argv as a launch without a capability', () => {
+    it('spawns the same argv as a launch without a capability, plus only the KB additions', () => {
       const on = h.launch({ kb: true });
       const off = h.launch({ kb: false });
       const onSession = h.store.get(on.id!)!.sessionId;
       const offSession = h.store.get(off.id!)!.sessionId;
 
       expect(on.spawn!.file).toBe(off.spawn!.file);
-      expect(argvShape(on.spawn!.args, onSession)).toEqual(argvShape(off.spawn!.args, offSession));
+      expect(argvShape(withoutKbFlags(on.spawn!.args), onSession)).toEqual(
+        argvShape(off.spawn!.args, offSession),
+      );
       expect(on.spawn!.args.join('\0')).not.toContain(on.token!);
       expect(on.spawn!.options.cwd).toBe(off.spawn!.options.cwd);
-      const { [CAPABILITY_ENV_NAME]: _token, ...onRest } = on.spawn!.options.env!;
-      expect(onRest).toEqual(off.spawn!.options.env);
+      const onEnv = { ...on.spawn!.options.env! };
+      delete onEnv[capabilityKeyOf(onEnv)];
+      const offEnv = { ...off.spawn!.options.env! };
+      for (const key of KB_MCP_NO_PROXY_KEYS) {
+        expect(onEnv[key]?.split(',')).toEqual(
+          expect.arrayContaining(['127.0.0.1', 'localhost', '::1']),
+        );
+        delete onEnv[key];
+        delete offEnv[key];
+      }
+      expect(onEnv).toEqual(offEnv);
     });
 
     it("cannot be replaced by the provider's own env", () => {
@@ -118,7 +160,7 @@ describe('capabilities', () => {
         provider: {
           buildLaunchCommand: (sessionId, cwd, opts) => ({
             ...claudeProvider.buildLaunchCommand!(sessionId, cwd, opts),
-            env: { PWD: cwd, [CAPABILITY_ENV_NAME]: planted },
+            env: { PWD: cwd, [CAPABILITY_ENV_NAME]: planted, [LEFTOVER_CAP_KEY]: planted },
           }),
         },
       });
@@ -130,8 +172,11 @@ describe('capabilities', () => {
 
     it('wins over a leftover in the server environment', () => {
       process.env[CAPABILITY_ENV_NAME] = `pxa_kb_${'B'.repeat(43)}`;
-      const { token } = h.launch({ kb: true });
+      process.env[LEFTOVER_CAP_KEY] = `pxa_kb_${'C'.repeat(43)}`;
+      const { token, spawn } = h.launch({ kb: true });
       expect(token).not.toBe(process.env[CAPABILITY_ENV_NAME]);
+      expect(token).not.toBe(process.env[LEFTOVER_CAP_KEY]);
+      expect(Object.keys(spawn!.options.env!)).not.toContain(LEFTOVER_CAP_KEY);
       expect(h.capabilities.verify(token)?.agentId).toBe(1);
     });
   });
@@ -141,15 +186,18 @@ describe('capabilities', () => {
   describe('B: without isKbEnabled (the default)', () => {
     it('puts no capability in the PTY env, even with a leftover in process.env', () => {
       process.env[CAPABILITY_ENV_NAME] = 'leftover-from-a-parent-agent';
+      process.env[LEFTOVER_CAP_KEY] = 'leftover-from-a-parent-agent';
       const { id, spawn, token } = h.launch();
       expect(id).toBe(1);
       expect(token).toBeUndefined();
       expect(Object.keys(spawn!.options.env!)).not.toContain(CAPABILITY_ENV_NAME);
+      expect(Object.keys(spawn!.options.env!)).not.toContain(LEFTOVER_CAP_KEY);
       expect(h.capabilities.size).toBe(0);
     });
 
     it('spawns exactly the command and environment it always did', () => {
       process.env[CAPABILITY_ENV_NAME] = 'leftover-from-a-parent-agent';
+      process.env[LEFTOVER_CAP_KEY] = 'leftover-from-a-parent-agent';
       const cwd = process.cwd();
       const { id, spawn } = h.launch();
       const sessionId = h.store.get(id!)!.sessionId;
@@ -161,7 +209,9 @@ describe('capabilities', () => {
 
       const inherited: Record<string, string> = {};
       for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined && key !== CAPABILITY_ENV_NAME) inherited[key] = value;
+        if (value !== undefined && key !== CAPABILITY_ENV_NAME && key !== LEFTOVER_CAP_KEY) {
+          inherited[key] = value;
+        }
       }
       expect(spawn!.options.env).toEqual({
         ...inherited,
@@ -177,10 +227,22 @@ describe('capabilities', () => {
     });
 
     it('strips the variable case-insensitively on Windows only', () => {
-      const env = { pixel_agents_capability: 'x', [CAPABILITY_ENV_NAME]: 'y', Path: 'p' };
-      expect(withoutCapabilityEnv(env, 'win32')).toEqual({ Path: 'p' });
+      const env = {
+        pixel_agents_capability: 'x',
+        [CAPABILITY_ENV_NAME]: 'y',
+        pixel_agents_cap_abcd1234: 'z',
+        [LEFTOVER_CAP_KEY]: 'w',
+        PIXEL_AGENTS_CAPTURE_X: 'kept',
+        Path: 'p',
+      };
+      expect(withoutCapabilityEnv(env, 'win32')).toEqual({
+        PIXEL_AGENTS_CAPTURE_X: 'kept',
+        Path: 'p',
+      });
       expect(withoutCapabilityEnv(env, 'linux')).toEqual({
         pixel_agents_capability: 'x',
+        pixel_agents_cap_abcd1234: 'z',
+        PIXEL_AGENTS_CAPTURE_X: 'kept',
         Path: 'p',
       });
       const clean = { Path: 'p' };
@@ -471,6 +533,12 @@ describe('capabilities', () => {
         type: 'curatorsLoaded',
         available: true,
         curators: [],
+        kbWorkspaceIds: [
+          DEFAULT_WORKSPACE_ID,
+          ...listWorkspaces()
+            .map((w) => w.id)
+            .filter((id) => id !== DEFAULT_WORKSPACE_ID),
+        ],
       });
       store.dispose();
     });

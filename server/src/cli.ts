@@ -34,6 +34,7 @@ import {
 } from './constants.js';
 import { CuratorTable } from './curators.js';
 import { FileStateAdapter } from './fileStateAdapter.js';
+import { KbRuntime } from './kbRuntime.js';
 import { claudeProvider, copyHookScript, hookProviderById } from './providers/index.js';
 import { removeStaleRoleSnapshots } from './roleStorage.js';
 import { PixelAgentsServer } from './server.js';
@@ -254,13 +255,17 @@ async function main(): Promise<void> {
 
   // Per-agent capabilities and Workspace curators: memory only, gone on
   // restart. Created before anything else subscribes to the store, so the
-  // registry hears every removal first. No launch here passes isKbEnabled, so
-  // nothing is issued yet (S2): the curator controls answer not_eligible.
+  // registry hears every removal first. A launch is issued a capability only
+  // into a Workspace whose KB is on (kbRuntime.isKbEnabled).
   const capabilities = new CapabilityRegistry({ store, ptyManager });
   const curators = new CuratorTable({
     capabilities,
     broadcast: (message) => store.broadcast(message),
   });
+  // The Knowledge Base host: the process's one KbStore, a random instance id
+  // for proposer records, and the MCP base URL once our own server listens.
+  // Nothing under ~/.pixel-agents/kb is created by starting up.
+  const kb = new KbRuntime({ bindHost: args.host });
 
   try {
     // Create runtime first (before server.start, so we can pass it in)
@@ -363,8 +368,13 @@ async function main(): Promise<void> {
       curators,
       allowedHosts: args.allowedHosts,
       rotateToken: args.rotateToken,
+      kb,
+      isKbEnabled: kb.isKbEnabled,
     });
     currentConfig = { port: config.port, token: config.token };
+    // Only a server this process started serves our /mcp: a reused one (another
+    // process's) leaves the base URL unknown, so no launch here gets a KB.
+    if (config.pid === process.pid) kb.serverListening(config.port);
     if (args.rotateToken) {
       console.log(
         '[Pixel Agents] Server token rotated: URLs carrying the old token no longer grant access. Open the new URL below on each device.',
