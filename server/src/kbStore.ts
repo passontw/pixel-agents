@@ -335,7 +335,7 @@ function entryMeta(entry: KbIndexEntry): KbEntryMeta {
 
 type SettingsRead = { state: 'ok' | 'absent' | 'corrupt'; settings: KbSettings };
 
-function parseSettings(raw: unknown): KbSettings | null {
+export function parseSettings(raw: unknown): KbSettings | null {
   if (!isPlainObject(raw) || !hasOnlyKeys(raw, SETTINGS_KEYS)) return null;
   if (raw.version !== undefined && raw.version !== KB_FILE_FORMAT_VERSION) return null;
   const { kbEnabled, operatorConfirm } = raw;

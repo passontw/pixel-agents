@@ -226,7 +226,12 @@ describe('Workspace curators', () => {
       const loaded = h
         .send({ type: 'webviewReady' }, context)
         .find((m) => m.type === 'curatorsLoaded');
-      expect(loaded).toEqual({ type: 'curatorsLoaded', available: false, curators: [] });
+      expect(loaded).toEqual({
+        type: 'curatorsLoaded',
+        available: false,
+        curators: [],
+        kbWorkspaceIds: [],
+      });
     }
     expect(h.curatorBroadcasts()).toEqual([]);
   });
@@ -235,7 +240,12 @@ describe('Workspace curators', () => {
     const loaded = h
       .send({ type: 'webviewReady' }, h.ctx({ isKbEnabled: undefined }))
       .find((m) => m.type === 'curatorsLoaded');
-    expect(loaded).toEqual({ type: 'curatorsLoaded', available: false, curators: [] });
+    expect(loaded).toEqual({
+      type: 'curatorsLoaded',
+      available: false,
+      curators: [],
+      kbWorkspaceIds: [],
+    });
   });
 
   it('sends curatorsLoaded to the connecting client only, with the current curators', () => {
@@ -249,6 +259,7 @@ describe('Workspace curators', () => {
       type: 'curatorsLoaded',
       available: true,
       curators: [{ workspaceId: ws.id, agentId: id }],
+      kbWorkspaceIds: ['default', ws.id],
     });
     // After the Workspace list, before any agent names one.
     const order = replies.map((m) => m.type);

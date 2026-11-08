@@ -35,8 +35,12 @@ import {
   noteCuratorRequest,
 } from '../src/curators.js';
 
-const loaded = (available: boolean, curators: CuratorsLoaded['curators'] = []): CuratorState =>
-  applyCuratorsLoaded({ type: 'curatorsLoaded', available, curators });
+const loaded = (
+  available: boolean,
+  curators: CuratorsLoaded['curators'] = [],
+  kbWorkspaceIds: string[] = ['default', 'w1', 'w2'],
+): CuratorState =>
+  applyCuratorsLoaded({ type: 'curatorsLoaded', available, curators, kbWorkspaceIds });
 
 function card(
   agentId: number,
@@ -133,6 +137,64 @@ describe('curator state', () => {
       agentId: 6,
     });
     assert.equal(curatorRejectionFor(state, 5), null);
+  });
+});
+
+describe('curator controls follow the Workspaces whose KB is on (S3b)', () => {
+  test('only a Workspace in kbWorkspaceIds is offered a control', () => {
+    const state = loaded(true, [], ['default']);
+    assert.deepEqual(curatorCardAction(state, false, 3, 'w2'), { kind: 'none' });
+    assert.deepEqual(curatorCardAction(state, false, 3, 'default'), {
+      kind: 'appoint',
+      message: { type: 'setWorkspaceCurator', workspaceId: 'default', agentId: 3 },
+    });
+    // Visibility itself is unchanged: it is the per-Workspace filter that hides.
+    assert.equal(curatorControlsVisible(state, false), true);
+  });
+
+  test('an unavailable host keeps no Workspace list', () => {
+    assert.deepEqual(loaded(false, [], ['default']).kbWorkspaceIds, []);
+    assert.deepEqual(INITIAL_CURATORS.kbWorkspaceIds, []);
+  });
+
+  test('a card outside the KB Workspaces shows no control, but a curator keeps its badge', () => {
+    const state = loaded(true, [{ workspaceId: 'w9', agentId: 7 }], ['default']);
+    const html = card(7, { state }, { 7: 'w9' });
+    assert.equal(html.includes('agent-card-curator-set'), false);
+    assert.equal(html.includes('agent-card-curator-unset'), false);
+    assert.ok(html.includes('data-testid="agent-card-curator"'));
+    const plain = card(8, { state }, { 8: 'w9' });
+    assert.equal(plain.includes('agent-card-curator'), false);
+  });
+
+  test('a malformed kbWorkspaceIds keeps only its strings', () => {
+    const from = (kbWorkspaceIds: unknown): string[] =>
+      applyCuratorsLoaded({
+        type: 'curatorsLoaded',
+        available: true,
+        curators: [],
+        kbWorkspaceIds,
+      } as unknown as CuratorsLoaded).kbWorkspaceIds;
+    assert.deepEqual(from('default'), []);
+    assert.deepEqual(from(null), []);
+    assert.deepEqual(from(undefined), []);
+    assert.deepEqual(from({ 0: 'default' }), []);
+    assert.deepEqual(from(['default', 3, null, { id: 'w1' }, 'w1']), ['default', 'w1']);
+  });
+
+  test('later messages keep the Workspace list', () => {
+    let state = loaded(true, [], ['default', 'w1']);
+    state = applyWorkspaceCuratorChanged(state, {
+      type: 'workspaceCuratorChanged',
+      workspaceId: 'w1',
+      agentId: 4,
+    });
+    state = applyCuratorRejected(noteCuratorRequest(state, 5), {
+      type: 'curatorRejected',
+      code: 'not_eligible',
+      reason: 'no',
+    });
+    assert.deepEqual(state.kbWorkspaceIds, ['default', 'w1']);
   });
 });
 

@@ -6,9 +6,9 @@
 // The host is the authority. `curatorsLoaded.available` says whether this host
 // supports curators at all; it is false (or never sent) in the VS Code panel
 // and in any embedded host, and a read-only office never shows the controls
-// either. Note that the standalone host issues no capability yet (S2), so on a
-// real host every appointment is answered `not_eligible`: the controls exist,
-// but no agent can take the role until a later release issues capabilities.
+// either. Controls appear only on cards whose Workspace has its Knowledge Base
+// on (`kbWorkspaceIds`): elsewhere no agent holds a capability, so every
+// appointment would be answered `not_eligible`.
 
 import type {
   ClientMessage,
@@ -27,6 +27,8 @@ export interface CuratorState {
   available: boolean;
   /** Workspace id -> curator agent id. */
   byWorkspace: Record<string, number>;
+  /** Workspaces whose Knowledge Base is on: the only ones offered controls. */
+  kbWorkspaceIds: string[];
   /** Card that sent the last request still unanswered by a change. */
   pendingAgentId: number | null;
   /** Last refusal, shown as plain text on the requesting card. */
@@ -36,6 +38,7 @@ export interface CuratorState {
 export const INITIAL_CURATORS: CuratorState = {
   available: false,
   byWorkspace: {},
+  kbWorkspaceIds: [],
   pendingAgentId: null,
   rejection: null,
 };
@@ -43,6 +46,7 @@ export const INITIAL_CURATORS: CuratorState = {
 /** A fresh handshake replaces everything this office knew. */
 export function applyCuratorsLoaded(msg: CuratorsLoaded): CuratorState {
   const byWorkspace: Record<string, number> = {};
+  const kbWorkspaceIds: string[] = [];
   if (msg.available === true && Array.isArray(msg.curators)) {
     for (const entry of msg.curators) {
       if (typeof entry?.workspaceId === 'string' && Number.isSafeInteger(entry.agentId)) {
@@ -50,7 +54,12 @@ export function applyCuratorsLoaded(msg: CuratorsLoaded): CuratorState {
       }
     }
   }
-  return { ...INITIAL_CURATORS, available: msg.available === true, byWorkspace };
+  if (msg.available === true && Array.isArray(msg.kbWorkspaceIds)) {
+    for (const id of msg.kbWorkspaceIds as unknown[]) {
+      if (typeof id === 'string') kbWorkspaceIds.push(id);
+    }
+  }
+  return { ...INITIAL_CURATORS, available: msg.available === true, byWorkspace, kbWorkspaceIds };
 }
 
 export function applyWorkspaceCuratorChanged(
@@ -98,7 +107,8 @@ export type CuratorCardAction =
 
 /**
  * What the agent card offers: dismiss for the current curator, appoint for an
- * agent whose Workspace has none, nothing otherwise (or when hidden).
+ * agent whose Workspace has none, nothing otherwise (or when hidden, or when
+ * the agent's Workspace has its Knowledge Base off).
  */
 export function curatorCardAction(
   state: CuratorState,
@@ -107,6 +117,7 @@ export function curatorCardAction(
   workspaceId: string,
 ): CuratorCardAction {
   if (!curatorControlsVisible(state, readOnly)) return { kind: 'none' };
+  if (!state.kbWorkspaceIds.includes(workspaceId)) return { kind: 'none' };
   const current = state.byWorkspace[workspaceId];
   if (current === agentId) {
     return { kind: 'dismiss', message: { type: 'unsetWorkspaceCurator', workspaceId } };

@@ -79,6 +79,14 @@ _Avoid_: token alone (the server token is a different secret), API key, session
 The one agent the operator appoints to look after a Workspace. Chosen by the operator from the office, never decided by a Role, at most one per Workspace, and held in memory only — a restart starts with none. Only an agent holding a Capability for that Workspace can be appointed, and it stops being the curator the moment that Capability is revoked. Standalone only; while no Capability is issued, every appointment is refused as not eligible.
 _Avoid_: owner, admin, lead (that's the team relationship)
 
+**Knowledge base**:
+A Workspace's own shared notes — titled entries kept by the host under `~/.pixel-agents/kb/<Workspace>/` — that the agents launched into that Workspace can list and read through the office's MCP tools. Off unless the operator turns it on for that Workspace; while it is on, every agent launched there holds a Capability, and that Capability alone decides which knowledge base it sees. Agents never write it directly: every change is a Proposal. Its content is untrusted data, never instructions. Standalone only.
+_Avoid_: memory (Claude Code's own), wiki, docs, CLAUDE.md (that's Claude Code's per-folder file)
+
+**Proposal**:
+A change to a Knowledge base that an agent asks for — create, replace or delete one entry — which changes nothing until it is decided. It records who proposed it (that server run, agent and session, from the agent's Capability) and waits as pending until it is approved, rejected, voided (its Workspace was removed), found stale (the entry changed meanwhile) or expired. An agent sees only its own proposals.
+_Avoid_: edit, suggestion, pull request, draft
+
 **Adopt**:
 Begin tracking a session that was started outside the office. An adopted agent is a full citizen.
 _Avoid_: import, attach

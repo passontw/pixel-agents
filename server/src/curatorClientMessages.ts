@@ -54,15 +54,18 @@ export function curatorsAvailable(host: CuratorHost): boolean {
   );
 }
 
-/** The handshake reply: every current curator, ids only. */
+/** The handshake reply: every current curator, ids only, and the Workspaces
+ *  whose KB is on (the only ones the office offers curator controls for). */
 export function curatorsLoadedMessage(
   available: boolean,
   curators: CuratorTable | undefined,
+  kbWorkspaceIds: readonly string[],
 ): Record<string, unknown> {
   return {
     type: 'curatorsLoaded',
     available,
     curators: available && curators ? curators.list() : [],
+    kbWorkspaceIds: available ? [...kbWorkspaceIds] : [],
   };
 }
 

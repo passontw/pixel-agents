@@ -23,7 +23,7 @@
  *   Workspace never revives an old token.
  *
  * Known consequences: a launch issues nothing unless the caller injects
- * isKbEnabled (S2 never does, so production holds no capability); removing a
+ * isKbEnabled and the KB is on for that Workspace (kbRuntime.ts); removing a
  * Workspace permanently revokes its PTY agents' capabilities; editing a
  * Workspace's Directories does not move running agents (so does not revoke);
  * the token is inherited by every descendant process of the agent's claude.
@@ -36,6 +36,7 @@ import type { AgentStateStore } from './agentStateStore.js';
 import {
   CAPABILITY_BEARER_PREFIX,
   CAPABILITY_ENV_NAME,
+  CAPABILITY_ENV_PREFIX,
   CAPABILITY_TOKEN_BYTES,
   CAPABILITY_TOKEN_PATTERN,
   CAPABILITY_TOKEN_PREFIX,
@@ -99,18 +100,20 @@ function digestOf(token: string): string {
 }
 
 /**
- * Remove every spelling of the capability variable from an environment copy.
- * Case-insensitive on Windows, where the environment is. Returns the input
- * object unchanged when there was nothing to remove.
+ * Remove every capability variable from an environment copy: each key with the
+ * per-launch prefix (CAPABILITY_ENV_PREFIX) and the S2 name exactly. A key that
+ * merely starts alike (PIXEL_AGENTS_CAPTURE_X) is kept. Case-insensitive on
+ * Windows, where the environment is. Returns the input object unchanged when
+ * there was nothing to remove.
  */
 export function withoutCapabilityEnv<T extends Record<string, string | undefined>>(
   env: T,
   platform: NodeJS.Platform = process.platform,
 ): T {
-  const matches = (key: string) =>
-    platform === 'win32'
-      ? key.toUpperCase() === CAPABILITY_ENV_NAME.toUpperCase()
-      : key === CAPABILITY_ENV_NAME;
+  const matches = (raw: string) => {
+    const key = platform === 'win32' ? raw.toUpperCase() : raw;
+    return key.startsWith(CAPABILITY_ENV_PREFIX) || key === CAPABILITY_ENV_NAME;
+  };
   if (!Object.keys(env).some(matches)) return env;
   const copy = { ...env };
   for (const key of Object.keys(copy)) {

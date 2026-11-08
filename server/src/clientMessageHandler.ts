@@ -28,6 +28,7 @@ import {
 } from './directories.js';
 import { collectDirectorySuggestions } from './directorySuggestions.js';
 import { hostDirectory } from './hostDirectory.js';
+import { kbWorkspaceIdsFor } from './kbRuntime.js';
 import { readLayoutFromFile, writeLayoutToFile } from './layoutPersistence.js';
 import type { ConsentEffects } from './providers/hook/consentExecutor.js';
 import { applyConsentChoice } from './providers/hook/consentExecutor.js';
@@ -36,7 +37,11 @@ import { claudeProvider, hookProviderById, hookProviders } from './providers/ind
 import { handleRoleClientMessage, type RoleMessageDeps } from './roleClientMessages.js';
 import type { PtySessionManager } from './terminal/ptySessionManager.js';
 import { launchStandaloneAgent } from './terminal/standaloneAgentLauncher.js';
-import { handleWorkspaceClientMessage, workspacesLoadedMessage } from './workspaces.js';
+import {
+  handleWorkspaceClientMessage,
+  listWorkspaces,
+  workspacesLoadedMessage,
+} from './workspaces.js';
 
 type WsSend = (message: Record<string, unknown>) => void;
 
@@ -94,6 +99,15 @@ export interface ClientMessageContext {
    *  no agent could ever be a curator, so the office offers no curator
    *  controls (curatorsLoaded.available stays false). */
   isKbEnabled?: (workspaceId: string) => boolean;
+  /**
+   * The rest of the KB host (kbRuntime.ts): the MCP base URL every launch needs
+   * before it may issue a capability, and the voiding of a removed Workspace's
+   * proposals. Absent in VS Code embedded mode and wherever no KB can be on.
+   */
+  kb?: {
+    mcpBaseUrl(): string | undefined;
+    voidWorkspaceProposals(workspaceId: string): Promise<void>;
+  };
 }
 
 // ── Setting key constants (mirror adapters/vscode/constants.ts) ──
@@ -162,6 +176,7 @@ function roleDepsFor(ctx: ClientMessageContext, send: WsSend): RoleMessageDeps {
           provider: claudeProvider,
           capabilities: ctx.capabilities,
           isKbEnabled: ctx.isKbEnabled,
+          kb: ctx.kb,
         },
         {
           directoryPath,
@@ -174,6 +189,22 @@ function roleDepsFor(ctx: ClientMessageContext, send: WsSend): RoleMessageDeps {
       );
     },
   };
+}
+
+/** Fire-and-forget: neither a rejection nor a synchronous throw reaches the
+ *  removal that triggered it. */
+function voidRemovedWorkspaceProposals(
+  kb: NonNullable<ClientMessageContext['kb']>,
+  workspaceId: string,
+): void {
+  const report = (): void => {
+    console.error("[Pixel Agents] KB: a removed Workspace's proposals were not voided.");
+  };
+  try {
+    void kb.voidWorkspaceProposals(workspaceId).catch(report);
+  } catch {
+    report();
+  }
 }
 
 /**
@@ -228,6 +259,7 @@ export function handleClientMessage(
           provider: claudeProvider,
           capabilities: ctx.capabilities,
           isKbEnabled: ctx.isKbEnabled,
+          kb: ctx.kb,
         },
         {
           directoryPath: msg.directoryPath as string | undefined,
@@ -456,6 +488,9 @@ export function handleClientMessage(
           // Moving its agents already revoked their capabilities (and with them
           // the curator); the record goes too, whoever holds it.
           ctx.curators?.clearWorkspace(workspaceId);
+          // Its waiting KB proposals can never be decided now. Not awaited, and
+          // a failure never undoes the removal (the KB data stays on disk).
+          if (ctx.kb) voidRemovedWorkspaceProposals(ctx.kb, workspaceId);
         },
       });
       break;
@@ -703,9 +738,18 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   send(workspacesLoadedMessage());
 
   // 4e. Curators, to this client only. `available` is the host's answer, not
-  // this connection's: a read-only office hides the controls itself.
+  // this connection's: a read-only office hides the controls itself. Only
+  // Workspaces whose KB is on can have a curator, so none on means none offered.
+  const components = curatorsAvailable(ctx);
+  const kbWorkspaceIds =
+    components && ctx.isKbEnabled
+      ? kbWorkspaceIdsFor(
+          listWorkspaces().map((w) => w.id),
+          ctx.isKbEnabled,
+        )
+      : [];
   send(
-    curatorsLoadedMessage(curatorsAvailable(ctx) && ctx.isKbEnabled !== undefined, ctx.curators),
+    curatorsLoadedMessage(components && kbWorkspaceIds.length > 0, ctx.curators, kbWorkspaceIds),
   );
 
   // Sync runtime refs with the persisted settings so scanners behave correctly

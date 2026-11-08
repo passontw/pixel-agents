@@ -21,10 +21,11 @@ import { createAgentState } from '../agentState.js';
 import type { AgentStateStore } from '../agentStateStore.js';
 import type { CapabilityRegistry } from '../capabilities.js';
 import { withoutCapabilityEnv, workspaceKey } from '../capabilities.js';
-import { CAPABILITY_ENV_NAME, JSONL_POLL_INTERVAL_MS } from '../constants.js';
+import { JSONL_POLL_INTERVAL_MS } from '../constants.js';
 import { directoryNameForLaunch } from '../directories.js';
 import { startFileWatching } from '../fileWatcher.js';
 import { directoryNameFor, hostDirectory } from '../hostDirectory.js';
+import { kbLaunchAdditions } from '../kbLaunch.js';
 import { assignPaletteIfNeeded } from '../paletteAssigner.js';
 import { removeRoleSnapshot } from '../roleStorage.js';
 import type { AgentState } from '../types.js';
@@ -45,6 +46,12 @@ export interface LaunchStandaloneAgentDeps {
   isKbEnabled?: (workspaceId: string) => boolean;
   /** Where capabilities are issued and verified. Absent: none is issued. */
   capabilities?: CapabilityRegistry;
+  /**
+   * Where a KB launch's agent reaches /mcp (kbRuntime.ts). A capability is
+   * issued only when this answers a URL: without one there is no endpoint to
+   * use it at, so the launch is exactly the pre-KB one.
+   */
+  kb?: { mcpBaseUrl(): string | undefined };
 }
 
 export interface LaunchStandaloneAgentOptions {
@@ -124,25 +131,37 @@ export function launchStandaloneAgent(
   // launch names, never from the server cwd: a launch with no directoryPath
   // (or one no Workspace owns) belongs to the default.
   const workspaceId = workspaceIdForDirectory(options.directoryPath);
-  // Only a caller that injected both the registry and isKbEnabled can get a
-  // capability; the default is a launch exactly as before.
-  const capabilities =
-    deps.isKbEnabled?.(workspaceKey(workspaceId)) === true ? deps.capabilities : undefined;
+  // Only a caller that injected the registry, isKbEnabled (true for this
+  // Workspace) and a known MCP base URL can get a capability; anything less is
+  // a launch exactly as before.
+  const kbEnabled = deps.isKbEnabled?.(workspaceKey(workspaceId)) === true;
+  const mcpBaseUrl = kbEnabled ? deps.kb?.mcpBaseUrl() : undefined;
+  const capabilities = mcpBaseUrl !== undefined ? deps.capabilities : undefined;
 
   const id = store.nextAgentId.current++;
 
   const grant = capabilities?.issue({ agentId: id, sessionId, workspaceId });
-  // Layered last, so nothing the provider returns can replace it.
-  const env = grant
-    ? { ...withoutCapabilityEnv(launch.env ?? {}), [CAPABILITY_ENV_NAME]: grant.token }
-    : launch.env;
+  let args = launch.args;
+  let env = launch.env;
+  if (grant && mcpBaseUrl !== undefined) {
+    const kb = kbLaunchAdditions(mcpBaseUrl, { ...process.env, ...launch.env });
+    // The KB flags go last (--allowedTools is variadic). The token is layered
+    // last too, so nothing the provider returns can replace it, and it never
+    // enters argv: --mcp-config names only its variable.
+    args = [...launch.args, ...kb.args];
+    env = {
+      ...withoutCapabilityEnv(launch.env ?? {}),
+      ...kb.noProxyEnv,
+      [kb.envName]: grant.token,
+    };
+  }
 
   let session;
   try {
     session = ptyManager.create({
       agentId: id,
       command: launch.command,
-      args: launch.args,
+      args,
       cwd,
       env,
       cols: options.cols,
