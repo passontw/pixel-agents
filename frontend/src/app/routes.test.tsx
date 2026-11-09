@@ -27,9 +27,9 @@ describe('路由煙霧測試', () => {
   it('分頁以路由切換並正確反白', async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/agents/passontw-backend/log')
-    await user.click(screen.getByRole('tab', { name: 'Files Changed' }))
+    await user.click(screen.getByRole('tab', { name: /Files Changed/ }))
     expect(router.state.location.pathname).toBe('/agents/passontw-backend/files')
-    expect(screen.getByRole('tab', { name: 'Files Changed' }).getAttribute('aria-selected')).toBe(
+    expect(screen.getByRole('tab', { name: /Files Changed/ }).getAttribute('aria-selected')).toBe(
       'true',
     )
     expect(screen.getByRole('tab', { name: 'Session Log' }).getAttribute('aria-selected')).toBe(

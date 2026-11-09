@@ -53,3 +53,6 @@ export const mockAgents: Agent[] = [
     isKbWriter: false,
   },
 ]
+
+/** mock：hooks 狀態（設計稿狀態列顯示 hooks: enabled）。後端尚未提供。 */
+export const MOCK_HOOKS_STATUS = 'enabled'

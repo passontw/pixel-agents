@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Agent } from '../domain/types'
-import { agentDetailText, agentRoleCodes } from './agentText'
+import { agentDetailText, agentRoleCodes, currentAutoRole } from './agentText'
 
 const base: Agent = {
   id: 'a',
@@ -39,5 +39,16 @@ describe('agentRoleCodes', () => {
       'W',
     ])
     expect(agentRoleCodes(base)).toEqual(['R'])
+  })
+})
+
+describe('currentAutoRole', () => {
+  it('取已指派角色中權限最高者', () => {
+    expect(currentAutoRole({ ...base, permissionRoles: ['R', 'E'] })).toBe('E')
+    expect(currentAutoRole({ ...base, permissionRoles: ['R', 'E', 'D'] })).toBe('D')
+    expect(currentAutoRole({ ...base, permissionRoles: ['R'] })).toBe('R')
+  })
+  it('沒有指派角色時為 undefined', () => {
+    expect(currentAutoRole({ ...base, permissionRoles: [] })).toBeUndefined()
   })
 })

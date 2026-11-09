@@ -5,6 +5,9 @@ import { AgentDetailLayout } from '../layouts/AgentDetailLayout'
 import { AppLayout } from '../layouts/AppLayout'
 import { AddAgentPage } from '../pages/addAgent/AddAgentPage'
 import { DashboardPage } from '../pages/dashboard/DashboardPage'
+import { FilesChangedPage } from '../pages/agent/FilesChangedPage'
+import { RoleActivityPage } from '../pages/agent/RoleActivityPage'
+import { SessionLogPage } from '../pages/agent/SessionLogPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { routePatterns } from './paths'
@@ -20,9 +23,9 @@ export const routes: RouteObject[] = [
         element: <AgentDetailLayout />,
         children: [
           { index: true, element: <Navigate to="log" replace /> },
-          { path: 'log', element: <PlaceholderPage title="Session Log" /> },
-          { path: 'files', element: <PlaceholderPage title="Files Changed" /> },
-          { path: 'roles', element: <PlaceholderPage title="Role Activity" /> },
+          { path: 'log', element: <SessionLogPage /> },
+          { path: 'files', element: <FilesChangedPage /> },
+          { path: 'roles', element: <RoleActivityPage /> },
         ],
       },
       { path: routePatterns.terminal, element: <PlaceholderPage title="Terminal" /> },
