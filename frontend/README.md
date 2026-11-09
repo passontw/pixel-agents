@@ -4,32 +4,37 @@
 
 ## 目前狀態
 
-| 項目 | 狀態 |
-|---|---|
-| Vite、React、TypeScript、Redux Toolkit、redux-saga、MUI | 已安裝並運作 |
-| 範例功能：後端連線狀態卡片（`features/server`） | 已完成，含單元測試 |
-| 開發時代理後端 `/api` 與 `/ws` | 已設定；`/api` 已驗證，`/ws` 尚未驗證 |
-| WebSocket 客戶端與 `core/asyncapi.yaml` 的協定整合 | 尚未實作 |
-| 登入權杖（token）處理 | 尚未實作 |
-| 路由、Agent 清單、終端機、工作空間、KB 審核等畫面 | 尚未實作 |
-| 設計稿對應的頁面 | 尚未實作 |
-| 端對端（e2e）測試 | 尚未建立 |
-| 納入根目錄的 npm workspace、CI | 尚未納入；本專案是獨立的 `package.json` |
+| 項目                                                                                        | 狀態                                        |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Vite、React、TypeScript、Redux Toolkit、redux-saga、MUI、react-router                       | 已安裝並運作                                |
+| MUI theme（light 與 dark 兩個 colorScheme、角色與狀態語意色、版面 token）                   | 已完成，預設 light                          |
+| 設計稿六個畫面（Dashboard、新增 Agent、Agent 詳細頁、Terminal、KB 審核、Style Guide）與 404 | 已實作，資料為 mock                         |
+| 後端連線狀態（`features/server`）                                                           | 已完成，顯示在側欄底部                      |
+| 開發時代理後端 `/api` 與 `/ws`                                                              | 已設定；`/api` 已驗證，`/ws` 尚未驗證       |
+| WebSocket 客戶端與 `core/asyncapi.yaml` 的協定整合                                          | 尚未實作                                    |
+| 真實的 Agent、工作空間資料                                                                  | 尚未接後端，目前用 `src/mocks/`             |
+| Terminal 接 `/terminal/:agentId` WebSocket 與真實 PTY                                       | 尚未實作，畫面為靜態 mock                   |
+| KB 寫入請求的提出、審核與寫入                                                               | 後端第一階段不處理，UI 只是設計稿的前端實作 |
+| 登入權杖（token）處理                                                                       | 尚未實作                                    |
+| 端對端（e2e）測試                                                                           | 尚未建立                                    |
+| 納入根目錄的 npm workspace、CI                                                              | 尚未納入；本專案是獨立的 `package.json`     |
 
 根目錄的 `npm run lint`、`check-types`、`format`、`knip` 都使用明確的目錄清單，不會掃描 `frontend/`，所以本專案不影響既有的 CI。
 
 ## 技術組合
 
-| 用途 | 套件 | 版本（安裝時） |
-|---|---|---|
-| 建置與開發伺服器 | Vite | 8.3 |
-| UI | React | 19.3 |
-| 語言 | TypeScript | 7.0 |
-| 狀態管理 | Redux Toolkit、react-redux | 2.14、9.3 |
-| 非同步流程 | redux-saga | 1.5 |
-| 元件庫 | MUI（`@mui/material`）加 emotion | 9.5 |
-| 測試 | vitest | 5.1 |
-| Lint | oxlint | 1.93 |
+| 用途             | 套件                                                                    | 版本（安裝時） |
+| ---------------- | ----------------------------------------------------------------------- | -------------- |
+| 建置與開發伺服器 | Vite                                                                    | 8.3            |
+| UI               | React                                                                   | 19.3           |
+| 語言             | TypeScript                                                              | 7.0            |
+| 狀態管理         | Redux Toolkit、react-redux                                              | 2.14、9.3      |
+| 非同步流程       | redux-saga                                                              | 1.5            |
+| 元件庫           | MUI（`@mui/material`、`@mui/icons-material`）加 emotion                 | 9.5            |
+| 路由             | react-router                                                            | 7.18           |
+| 字型             | `@fontsource/inter`、`@fontsource/jetbrains-mono`（自行打包，不用 CDN） | 5.3            |
+| 測試             | vitest、jsdom、Testing Library                                          | 5.1            |
+| Lint             | oxlint                                                                  | 1.93           |
 
 文件：[Redux Toolkit](https://redux.js.org/toolkit/)、[redux-saga](https://redux-saga.js.org/)、[MUI](https://mui.com/material-ui/)、[Vite](https://vite.dev/)。
 
@@ -55,13 +60,13 @@ npm run dev
 
 ### 指令
 
-| 指令 | 說明 |
-|---|---|
-| `npm run dev` | 開發伺服器（預設埠 5173，可用 `-- --port 5199` 指定） |
-| `npm run build` | 型別檢查加正式建置，輸出到 `dist/` |
-| `npm run preview` | 預覽建置結果 |
-| `npm run lint` | oxlint |
-| `npm test` | vitest（單次執行） |
+| 指令              | 說明                                                  |
+| ----------------- | ----------------------------------------------------- |
+| `npm run dev`     | 開發伺服器（預設埠 5173，可用 `-- --port 5199` 指定） |
+| `npm run build`   | 型別檢查加正式建置，輸出到 `dist/`                    |
+| `npm run preview` | 預覽建置結果                                          |
+| `npm run lint`    | oxlint                                                |
+| `npm test`        | vitest（單次執行）                                    |
 
 ### 設定後端位址
 
@@ -78,24 +83,64 @@ BACKEND_URL=http://127.0.0.1:4000 npm run dev
 ```
 frontend/
   index.html
-  vite.config.ts           開發代理設定
+  vite.config.ts           開發代理與 vitest 設定（jsdom）
+  .prettierrc.json         本專案的 prettier 設定（semi: false，其餘同根目錄）
   src/
-    main.tsx               入口：Provider、ThemeProvider、CssBaseline
-    App.tsx                版面
-    theme.ts               MUI 主題（目前是深色）
+    main.tsx               入口：Provider、ThemeProvider（defaultMode）、CssBaseline
+    App.tsx                RouterProvider
     app/
       store.ts             configureStore 加 saga middleware；匯出 RootState、AppDispatch
       rootSaga.ts          把各功能的 saga 組合起來
       hooks.ts             型別化的 useAppDispatch、useAppSelector
+      routes.tsx           路由表
+      paths.ts             路徑、分頁常數
+    theme/                 唯一允許出現色碼的目錄
+      index.ts             createTheme（cssVariables、colorSchemes）
+      palettes.ts          light 與 dark 色票
+      types.ts             自訂語意的型別與 module augmentation
+      layout.ts            版面 token
+      typography.ts        字型與字階
+      components.ts        Button、Chip、Tabs、Card、TextField、Switch 等預設外觀
+      colorMode.ts         DEFAULT_COLOR_MODE
+      fonts.ts             @fontsource 匯入
+    layouts/               AppLayout（側欄加 Outlet）、AgentDetailLayout（脈絡列、路由分頁、狀態列）
+    pages/                 dashboard、addAgent、agent、terminal、kbReview、styleGuide、NotFoundPage
+    components/            RoleBadge、StatusDot、StatusChip、AgentListItem、PageHeader、Sidebar、DiffBlock ...
     features/
-      server/              範例功能：後端連線狀態
-        serverSlice.ts     狀態與 action（Redux Toolkit）
-        serverSaga.ts      非同步流程（redux-saga）
-        serverSaga.test.ts saga 的單元測試
-        ServerStatusCard.tsx  MUI 元件
+      server/              後端連線狀態（範例功能）
+      workspaces/          工作空間清單與選取
+      agents/              Agent 清單、啟動與停止流程、selectors
+      kb/                  KB 寫入請求與審核（後端尚未提供）
+    domain/                領域型別與角色資訊
+    mocks/                 mock 資料（取自設計稿）
+    hooks/ utils/ test/    共用 hook、時間格式化、測試輔助
 ```
 
-慣例：一個功能一個資料夾，放在 `src/features/<名稱>/`，裡面有 slice、saga、元件與測試。
+慣例：一個功能一個資料夾，放在 `src/features/<名稱>/`，裡面有 slice、saga、selectors 與測試；頁面放在 `src/pages/`。
+
+## 路由
+
+| 路徑                        | 畫面                                                                  |
+| --------------------------- | --------------------------------------------------------------------- |
+| `/`                         | Dashboard                                                             |
+| `/agents/new`               | 新增 Agent                                                            |
+| `/agents/:agentId`          | 預設導向 `log`                                                        |
+| `/agents/:agentId/log`      | Session Log                                                           |
+| `/agents/:agentId/files`    | Files Changed                                                         |
+| `/agents/:agentId/roles`    | Role Activity                                                         |
+| `/agents/:agentId/terminal` | Terminal                                                              |
+| `/kb/review`                | 知識庫寫入審核（分頁用 `?tab=approved`、`?tab=rejected`，預設待審核） |
+| `/style-guide`              | Style Guide                                                           |
+| `*`                         | 找不到頁面                                                            |
+
+分頁都由路由決定，沒有本地 state；側欄與分頁列的反白由 NavLink 的 `aria-current` 與 MUI Tabs 的 `value` 決定。
+
+## Theme
+
+- `theme/index.ts` 使用 MUI 的 CSS 變數主題（`cssVariables`）與 `colorSchemes`，同時定義 `light` 與 `dark`。dark 色票取自設計稿 Style Guide；light 是對應語意的淺色版。
+- 自訂語意（module augmentation 在 `theme/types.ts`）：`palette.role.{read,edit,delete,kbWrite}`（文字、淡底、邊框）、`palette.status.{running,waiting,idle}`、`palette.border`、`palette.background.{inset,deepest,tag}`、`palette.text.{muted,subtle,ghost}`、`theme.layout`（側欄 240、標題列 48、context 列 40、分頁列 36、狀態列 28、內容內距、圓角 2/3/4/5/6）、字階 `badge`、`code10` 到 `code13`。
+- 元件內一律用 `theme.vars.palette...`（CSS 變數）與 `theme.layout`，不寫色碼；`theme/noHardcodedColors.test.ts` 會掃描 `src/` 下 `theme/` 以外的檔案，出現 hex、rgb、hsl 就失敗。
+- **切換到 dark**：把 `src/theme/colorMode.ts` 的 `DEFAULT_COLOR_MODE` 改成 `'dark'`。目前沒有切換 UI，也不會讀寫 localStorage（`storageManager={null}`）。
 
 ## 資料流
 
@@ -108,6 +153,27 @@ frontend/
 ```
 
 reducer 負責「狀態怎麼變」，saga 負責「什麼時候、怎麼去拿資料」。saga 不直接改狀態，只發出 action。
+
+## Action、saga 與 mock 資料
+
+| 功能       | Action                                                                                                                                                                                     | Saga                                                                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| workspaces | `workspaceSelected`、`workspaceAdded`                                                                                                                                                      | 無                                                                                                                                         |
+| agents     | `agentSelected`、`agentLaunchRequested`、`agentLaunched`、`agentLaunchFailed`、`agentLaunchReset`、`agentStopRequested`、`agentStopped`、`agentPermissionRolesChanged`、`kbWriterAssigned` | `agentLaunchRequested`（takeLatest，延遲後成功；名稱重複或找不到工作空間則失敗）、`agentStopRequested`（takeEvery，延遲後 `agentStopped`） |
+| kb         | `kbRequestApproved`、`kbRequestRejected`、`kbRequestsApproveAll`（只作用於 pending）                                                                                                       | 無（reducer 處理）                                                                                                                         |
+| server     | `healthRequested`、`healthSucceeded`、`healthFailed`                                                                                                                                       | `serverSaga`                                                                                                                               |
+
+- 每個工作空間只能有一位 KB Writer：`kbWriterAssigned` 與啟動時指定 KB Writer 都會取消同工作空間的舊 Writer。
+- selectors 在各功能的 `selectors.ts`（例如 `selectAgentsOfWorkspace`、`selectPendingKbRequests`、`selectAgentById`）。
+- mock 資料在 `src/mocks/`：工作空間 weiyun 與 personal；Agent passontw-backend、passontw-spec、passontw-pixel（取自設計稿）加 personal-notes（為對應設計稿「personal：1 agent」而補上）；Session Log 與 Files Changed；KB 請求待審 2、已核准 5、已拒絕 1（已核准與已拒絕的內容為補足數量的最小 mock）；Terminal 範例輸出。
+- Role Activity 不另存，由 Session Log 依 Auto Role 分組推導。
+
+## 尚未接後端的項目
+
+- 所有 Agent、工作空間、Session Log 資料來自 mock；啟動與停止只是模擬延遲。
+- Terminal 沒有連 `/terminal/:agentId` WebSocket，也沒有真實 PTY。
+- KB 寫入請求的提出、審核與寫入，後端第一階段不處理；相關 UI 與 action 只改前端狀態。
+- hooks 狀態（`hooks: enabled`）是固定的 mock 值。
 
 ## 教學：新增一個功能
 
@@ -277,22 +343,22 @@ npm run build
 
 ## 教學：使用 MUI
 
-- 元件從 `@mui/material/<元件名>` 個別匯入（本專案的寫法，例如 `import Button from '@mui/material/Button'`），建置結果較小。
-- 排版優先用 `Stack`（一維排列加間距）、`Container`（置中與最大寬度）、`Box`。
-- 客製樣式用 `sx` 屬性：`<Card sx={{ mb: 2 }}>`。數字會依主題的間距單位換算（`mb: 2` 是 `2 * 8px`）。
-- 全域配色與字型改 `src/theme.ts` 的 `createTheme`，不要在各元件寫死顏色。
-- 圖示需要另外安裝 `@mui/icons-material`，目前沒有安裝。
+- 元件從 `@mui/material/<元件名>` 個別匯入（例如 `import Button from '@mui/material/Button'`），圖示從 `@mui/icons-material/<圖示名>` 個別匯入。
+- 排版優先用 `Stack`、`Box`；間距單位是 4px（`theme.spacing(2)` 是 8px）。
+- 顏色、字型、圓角、高度都來自 theme：在 `sx` 用函式寫法，例如 `sx={(theme) => ({ color: theme.vars.palette.text.muted, borderRadius: theme.layout.radius.card })}`；不要寫色碼。
+- 外觀優先用語意（`variant`、`color`）：`Button` 有 `contained`、`outlined`（`color="inherit"` 為中性、`color="error"` 為危險）與自訂的 `dashed`；`Chip` 的 `color="error"` 是計數徽章。要新增預設外觀改 `src/theme/components.ts`。
+- 新增色票或語意改 `src/theme/palettes.ts` 與 `src/theme/types.ts`，light 與 dark 都要定義（theme 測試會檢查）。
 
 ## 與後端連線
 
 後端是 `server/` 的 Node.js 伺服器（Fastify）。可用的入口：
 
-| 入口 | 用途 | 本前端目前是否使用 |
-|---|---|---|
-| `GET /api/health` | 存活檢查，回傳 `status`、`uptime`、`pid` | 是（範例功能） |
-| `GET /ws` | 與後端的雙向協定通道 | 否 |
-| `POST /api/hooks/:providerId` | Claude Code 的 hook 事件進入點 | 否（由 hook 腳本使用） |
-| `/terminal/:agentId` | 網頁終端機的 WebSocket | 否 |
+| 入口                          | 用途                                     | 本前端目前是否使用     |
+| ----------------------------- | ---------------------------------------- | ---------------------- |
+| `GET /api/health`             | 存活檢查，回傳 `status`、`uptime`、`pid` | 是（範例功能）         |
+| `GET /ws`                     | 與後端的雙向協定通道                     | 否                     |
+| `POST /api/hooks/:providerId` | Claude Code 的 hook 事件進入點           | 否（由 hook 腳本使用） |
+| `/terminal/:agentId`          | 網頁終端機的 WebSocket                   | 否                     |
 
 `/ws` 傳遞的訊息格式定義在倉庫根目錄的 `core/asyncapi.yaml`，由它產生 `core/src/messages.ts` 的 TypeScript 型別（ServerMessage、ClientMessage）。舊前端透過 `MessageTransport` 介面（`webview-ui/src/transport/`）收發這些訊息。
 
@@ -307,8 +373,8 @@ npm run build
 ## 已知限制與注意事項
 
 - 本專案是獨立專案，沒有加入根目錄的 npm workspace，依賴要在 `frontend/` 內單獨 `npm install`。
-- 程式碼風格與根目錄的 ESLint、Prettier 規則不同：本專案用 oxlint，沒有套用舊前端的自訂規則（例如禁止行內顏色、像素風格限制）。要不要統一，需要另外決定。
-- 沒有路由，也沒有多頁面結構；加入畫面前先決定路由方案。
-- 沒有 `@mui/icons-material`。
+- 本專案用 oxlint，沒有套用舊前端的自訂 ESLint 規則；「無寫死色碼」改由測試把關。
+- 根目錄的 prettier 設定含分號，本專案以 `frontend/.prettierrc.json`（`semi: false`）維持既有無分號風格。
+- 路由使用 `createBrowserRouter`；正式部署需要讓伺服器對所有路徑回傳 `index.html`。
 - TypeScript 7.0 是 Vite 範本當時產生的版本，未做過版本評估。
-- 設計稿（`passon-agents-dashboard`）的畫面都還沒有實作。
+- 設計稿沒有 Files Changed 與 Role Activity 的畫面，這兩個分頁是依其他畫面的語彙自行設計。
