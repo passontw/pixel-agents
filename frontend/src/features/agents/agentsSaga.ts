@@ -19,8 +19,6 @@ export const MOCK_STOP_DELAY_MS = 500
 
 type SagaState = { agents: AgentsState; workspaces: WorkspacesState }
 
-export const AGENT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
-
 export function* launchAgent(action: PayloadAction<LaunchInput>) {
   const input = action.payload
   yield delay(MOCK_LAUNCH_DELAY_MS)
