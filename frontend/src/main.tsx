@@ -6,8 +6,12 @@ import { Provider } from 'react-redux'
 
 import App from './App.tsx'
 import { store } from './app/store'
+import { healthRequested } from './features/server/serverSlice'
 import { DEFAULT_COLOR_MODE, theme } from './theme'
 import './theme/fonts'
+
+// 啟動時檢查一次後端連線，結果顯示在側欄底部。
+store.dispatch(healthRequested())
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
