@@ -8,6 +8,7 @@ import { DashboardPage } from '../pages/dashboard/DashboardPage'
 import { FilesChangedPage } from '../pages/agent/FilesChangedPage'
 import { RoleActivityPage } from '../pages/agent/RoleActivityPage'
 import { SessionLogPage } from '../pages/agent/SessionLogPage'
+import { KbReviewPage } from '../pages/kbReview/KbReviewPage'
 import { TerminalPage } from '../pages/terminal/TerminalPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
@@ -30,7 +31,7 @@ export const routes: RouteObject[] = [
         ],
       },
       { path: routePatterns.terminal, element: <TerminalPage /> },
-      { path: routePatterns.kbReview, element: <PlaceholderPage title="知識庫寫入審核" /> },
+      { path: routePatterns.kbReview, element: <KbReviewPage /> },
       { path: routePatterns.styleGuide, element: <PlaceholderPage title="Style Guide" /> },
       { path: '*', element: <NotFoundPage /> },
     ],
