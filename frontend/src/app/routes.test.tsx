@@ -6,7 +6,7 @@ import { renderApp } from '../test/renderApp'
 
 describe('路由煙霧測試', () => {
   it.each([
-    ['/', 'Dashboard'],
+    ['/', 'weiyun'],
     ['/agents/new', '新增 Agent'],
     ['/agents/passontw-backend/terminal', 'Terminal'],
     ['/kb/review', '知識庫寫入審核'],

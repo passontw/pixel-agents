@@ -17,7 +17,7 @@ export function PageHeader({ title, subtitle, actions }: PageHeaderProps) {
         alignItems: 'center',
         flexShrink: 0,
         gap: 3,
-        padding: theme.spacing(5, 6, 4),
+        padding: `${theme.layout.contentPadding.compact}px ${theme.layout.contentPadding.regular}px ${theme.spacing(4)}`,
         borderBottom: `1px solid ${theme.vars.palette.divider}`,
       })}
     >

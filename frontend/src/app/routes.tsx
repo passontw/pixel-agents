@@ -3,6 +3,7 @@ import type { RouteObject } from 'react-router'
 
 import { AgentDetailLayout } from '../layouts/AgentDetailLayout'
 import { AppLayout } from '../layouts/AppLayout'
+import { DashboardPage } from '../pages/dashboard/DashboardPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
 import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { routePatterns } from './paths'
@@ -11,7 +12,7 @@ export const routes: RouteObject[] = [
   {
     element: <AppLayout />,
     children: [
-      { index: true, element: <PlaceholderPage title="Dashboard" /> },
+      { index: true, element: <DashboardPage /> },
       { path: routePatterns.newAgent, element: <PlaceholderPage title="新增 Agent" /> },
       {
         path: routePatterns.agent,
