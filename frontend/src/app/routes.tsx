@@ -9,9 +9,9 @@ import { FilesChangedPage } from '../pages/agent/FilesChangedPage'
 import { RoleActivityPage } from '../pages/agent/RoleActivityPage'
 import { SessionLogPage } from '../pages/agent/SessionLogPage'
 import { KbReviewPage } from '../pages/kbReview/KbReviewPage'
+import { StyleGuidePage } from '../pages/styleGuide/StyleGuidePage'
 import { TerminalPage } from '../pages/terminal/TerminalPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
-import { PlaceholderPage } from '../pages/PlaceholderPage'
 import { routePatterns } from './paths'
 
 export const routes: RouteObject[] = [
@@ -32,7 +32,7 @@ export const routes: RouteObject[] = [
       },
       { path: routePatterns.terminal, element: <TerminalPage /> },
       { path: routePatterns.kbReview, element: <KbReviewPage /> },
-      { path: routePatterns.styleGuide, element: <PlaceholderPage title="Style Guide" /> },
+      { path: routePatterns.styleGuide, element: <StyleGuidePage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },
