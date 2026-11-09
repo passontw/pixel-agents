@@ -1,23 +1,10 @@
-import AppBar from '@mui/material/AppBar'
-import Container from '@mui/material/Container'
-import Toolbar from '@mui/material/Toolbar'
-import Typography from '@mui/material/Typography'
+import { createBrowserRouter } from 'react-router'
+import { RouterProvider } from 'react-router/dom'
 
-import { ServerStatusCard } from './features/server/ServerStatusCard'
+import { routes } from './app/routes'
+
+const router = createBrowserRouter(routes)
 
 export default function App() {
-  return (
-    <>
-      <AppBar position="static" color="default" elevation={0}>
-        <Toolbar>
-          <Typography variant="h6" component="h1">
-            passon agents
-          </Typography>
-        </Toolbar>
-      </AppBar>
-      <Container sx={{ py: 3 }}>
-        <ServerStatusCard />
-      </Container>
-    </>
-  )
+  return <RouterProvider router={router} />
 }
