@@ -8,7 +8,8 @@ describe('路由煙霧測試', () => {
   it.each([
     ['/', 'weiyun'],
     ['/agents/new', '新增 Agent'],
-    ['/agents/passontw-backend/terminal', 'Terminal'],
+    ['/agents/passontw-backend/terminal', 'passontw-backend'],
+
     ['/kb/review', '知識庫寫入審核'],
     ['/style-guide', 'Style Guide'],
   ])('%s 渲染出標題 %s', (path, title) => {

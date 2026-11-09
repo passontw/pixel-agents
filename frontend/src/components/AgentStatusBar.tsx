@@ -9,12 +9,14 @@ import type { PermissionRole } from '../domain/types'
 export interface AgentStatusBarProps {
   items: ReactNode[]
   autoRole?: PermissionRole
-  /** 右側額外文字，例如「1 KB request pending」 */
+  /** 右側的一般項目，位於 Auto Role 之前 */
+  endItems?: ReactNode[]
+  /** 右側強調提示，例如「1 KB request pending」 */
   trailing?: ReactNode
 }
 
 /** 底部狀態列（高 28）：左側為項目清單，右側為 Auto Role 與其他提示。 */
-export function AgentStatusBar({ items, autoRole, trailing }: AgentStatusBarProps) {
+export function AgentStatusBar({ items, autoRole, endItems = [], trailing }: AgentStatusBarProps) {
   return (
     <Box
       component="footer"
@@ -35,6 +37,11 @@ export function AgentStatusBar({ items, autoRole, trailing }: AgentStatusBarProp
         </Typography>
       ))}
       <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 3 }}>
+        {endItems.map((item, index) => (
+          <Typography key={index} variant="code10" color="text.subtle" component="span">
+            {item}
+          </Typography>
+        ))}
         {autoRole && (
           <Typography
             variant="code10"
