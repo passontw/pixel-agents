@@ -239,8 +239,8 @@ Adding a new CLI integration is one subdirectory under `server/src/providers/hoo
 
 `core/asyncapi.yaml` is the contract. Pinned to **3.0.0** because `@asyncapi/modelina@5.10.1` declares `supportedVersions: ['3.0.0']` only; bumping to 3.1.0 produces `export type Root = any`. Revisit when Modelina ships 3.1.0 support.
 
-- **52 ServerMessage variants** (server → client): agent lifecycle, agent activity, sub-agent activity, team + context usage, assets, settings (`settingsLoaded`, `bypassPermissionsUpdated` — the skip-permissions posture, broadcast to every office on change because every launch reads it, `hooksStatus`, `hooksConsentRequest`), Directories (`directoriesLoaded`, `directorySaved` — a save's ack to its sender, carrying the entry as stored, whose name keys the Area mapping; `directoryRejected`, `directorySuggestions`), Workspaces (`workspacesLoaded`, `workspaceRejected`, `agentWorkspaceChanged`), KB Writer / curators (`curatorsLoaded`, `workspaceCuratorChanged`, `curatorBindingChanged`, `curatorRejected`), write guard (`agentGuardStatus`), Roles (`rolesAvailable`, `rolePreview`, `roleConfirmed`, `roleRejected`), KB browsing (`kbFilesListed`, `kbFileRead`, `kbRejected`), terminal (`terminalAvailability`, `terminalSessionOpened`, `terminalSessionClosed`). `agentCreated.directoryPath` / `existingAgents.directoryPaths` carry the real path of the Directory an agent works in (absent for agents observed from outside); clients compare Directories by this path, never by name.
-- **39 ClientMessage variants** (client → server): lifecycle (`webviewReady`, `launchAgent`, `createAgent`, `startAgent`, `focusAgent`, `closeAgent`), layout (`saveAgentSeats`, `saveLayout`, `exportLayout`, `importLayout`), settings (`setSoundEnabled`, `setHooksEnabled`, `hooksConsentResponse`, `setWatchAllSessions`, `setAlwaysShowLabels`, `setGhostHeadlessAgents`, `setHooksInfoShown`, `setLastSeenVersion`, `setShowAreas`, `setBypassPermissions`, `setShowHostDirectories` — whether the host's own Directories are listed, off by default; only the list is gated, launches still name agents after them), Directories (`saveDirectory`, `removeDirectory`, `requestDirectorySuggestions`), Workspaces (`saveWorkspace`, `removeWorkspace`, `setWorkspaceRoot`, `setWorkspacePermissionRoles`, `setWorkspaceCurator`, `unsetWorkspaceCurator`), Roles (`requestRoles`, `requestRolePreview`, `confirmRole`), KB browsing (`listKbFiles`, `readKbFile`), assets (`addExternalAssetDirectory`, `removeExternalAssetDirectory`, `saveAreaMappings`), `openSessionsFolder`.
+- **53 ServerMessage variants** (server → client): agent lifecycle, agent activity, sub-agent activity, team + context usage, assets, settings (`settingsLoaded`, `bypassPermissionsUpdated` — the skip-permissions posture, broadcast to every office on change because every launch reads it, `hooksStatus`, `hooksConsentRequest`), Directories (`directoriesLoaded`, `directorySaved` — a save's ack to its sender, carrying the entry as stored, whose name keys the Area mapping; `directoryRejected`, `directorySuggestions`), Workspaces (`workspacesLoaded`, `workspaceRejected`, `agentWorkspaceChanged`), KB Writer / curators (`curatorsLoaded`, `workspaceCuratorChanged`, `curatorBindingChanged`, `curatorRejected`), write guard (`agentGuardStatus`), Roles (`rolesAvailable`, `rolePreview`, `roleConfirmed`, `roleRejected`), KB browsing (`kbFilesListed`, `kbFileRead`, `kbRejected`), terminal (`terminalAvailability`, `terminalSessionOpened`, `terminalSessionClosed`), diagnostics (`agentDiagnostics`). `agentCreated.directoryPath` / `existingAgents.directoryPaths` carry the real path of the Directory an agent works in (absent for agents observed from outside); clients compare Directories by this path, never by name.
+- **40 ClientMessage variants** (client → server): lifecycle (`webviewReady`, `launchAgent`, `createAgent`, `startAgent`, `focusAgent`, `closeAgent`), layout (`saveAgentSeats`, `saveLayout`, `exportLayout`, `importLayout`), settings (`setSoundEnabled`, `setHooksEnabled`, `hooksConsentResponse`, `setWatchAllSessions`, `setAlwaysShowLabels`, `setGhostHeadlessAgents`, `setHooksInfoShown`, `setLastSeenVersion`, `setShowAreas`, `setBypassPermissions`, `setShowHostDirectories` — whether the host's own Directories are listed, off by default; only the list is gated, launches still name agents after them), Directories (`saveDirectory`, `removeDirectory`, `requestDirectorySuggestions`), Workspaces (`saveWorkspace`, `removeWorkspace`, `setWorkspaceRoot`, `setWorkspacePermissionRoles`, `setWorkspaceCurator`, `unsetWorkspaceCurator`), Roles (`requestRoles`, `requestRolePreview`, `confirmRole`), KB browsing (`listKbFiles`, `readKbFile`), assets (`addExternalAssetDirectory`, `removeExternalAssetDirectory`, `saveAreaMappings`), `openSessionsFolder`, diagnostics (`requestDiagnostics`).
 
 Both unions use `oneOf` with `discriminator: type`. Every concrete message sets `additionalProperties: false`.
 
@@ -687,9 +687,27 @@ Browser tools in `scripts/` for editing bundled assets: `asset-manager.html` (un
 
 截至 2026-11-05 的查詢結果（用 `gh` 重新確認，不要當作固定事實）：
 
-- 開發 repo（`origin`，SSH）：`passontw/pixel-agents`，公開 fork，預設分支 `main`，目前只有 `main` 一個分支。擴充開發在這個 repo 進行。
+- 開發 repo（`origin`，SSH）：`passontw/pixel-agents`，公開 fork，預設分支 `main`，另有 feat/、fix/、test/ 開頭的功能分支（遠端分支清單以 `git branch -r` 為準）。擴充開發在這個 repo 進行。
 - 上游：`pixel-agents-hq/pixel-agents`，Issues 開啟，本帳號權限為 READ。本機沒有設定 `upstream` remote，同步上游前要先自行加入。
 - Issues：fork 的 Issues 於 2026-11-05 以 `gh repo edit passontw/pixel-agents --enable-issues` 開啟，開啟時沒有任何 issue 與 PR。`gh workflow list` 對 fork 回傳空清單，CI 是否會在 fork 上執行，以 `.github/workflows/` 為準，不要假設。
 - 登入身分：`gh` 以帳號 `passontw` 登入（keyring，scopes：`gist`、`read:org`、`repo`、`workflow`），對 fork 為 ADMIN。
 - 所屬組織：`passoncomtw`、`trip-service`。`passontw` 與 `passoncomtw` 底下的 repo 都可用 `gh repo list <owner>` 查詢，含私有 repo。
 - 上游 Issues 約 112 個 open（2026-11-03 查詢），要參考時用 `gh issue list -R pixel-agents-hq/pixel-agents`。
+
+## 專案進度
+
+截至 2026-11-12，以下是當天用 `git`、測試指令確認的狀態，之後會變動，使用前先重新查。
+
+- 分支：`feat/frontend-ui`，HEAD `47c2da7`（合併 `main` 的 merge commit），與 `origin/feat/frontend-ui` 同步，工作樹乾淨，沒有未提交的變更。相對 `origin/main` 有 10 個非 merge commit，全部是 `frontend/` 的 UI 實作（theme、路由、Dashboard、新增 Agent、Agent 詳細頁、Terminal、KB 審核、Style Guide）。
+- 新前端另在 `passontw/passon-agents-frontend`（獨立 repo，Vite 代理 `/api`、`/ws`、`/terminal` 到本後端）；本 repo 的 `frontend/` 目錄在 HEAD 有 90 個已追蹤檔案，commit `6ed5237` 曾移除過它。
+- 近期完成（依 commit）：
+  - `b2e0bbf` 移除 server token 驗證，standalone 只做同源 Origin 檢查。
+  - `cd08494` 任務派送 MCP 與操作者輸入；`f9eb7f9` 知識庫瀏覽與策展者（KB Writer）綁定；`69158cd` 知識庫根目錄不可重疊，有內容後鎖定。
+  - `6e685ca` 建立 Agent 與啟用分開，啟用時用 `--resume` 接續對話。
+  - `5e58606` createAgent 接受自由 Path，登記到 Workspace 並初始化個人 KB；`8cd03e4` 拒絕或失敗時回覆 `workspaceRejected` 與固定理由。
+  - `6c4871c` `agentCreated.directoryPath` 與 `existingAgents.directoryPaths`，前端改用路徑判斷「已有 Agent」。
+- 進行中或待決：Workspace 內的 Directory 顯示名稱（會改 `workspaces.json` 格式，需先過計畫審查，使用者尚未核准）。
+- 測試（2026-11-12 本機）：`tsc` 無錯誤；`npm run lint` 0 error、1 warning（`webview-ui/src/App.tsx:400`）；`test:server` 95 檔 1733 項通過；`test:webview` 23 檔 283 項通過。
+- 未驗證：Playwright e2e 本次沒有執行；含 symlink 的 Directory 路徑是否仍顯示「已有 Agent」；使用者回報的「Couldn't create the Agent: saving it failed and nothing was changed」在路徑與既有 Agent 相同時出現，目前無法重現。
+- 阻塞：上述錯誤的根因需要使用者重現時伺服器終端機印出的 `Terminal: not creating -- <原因>` 那一行；VS Code adapter 沒有送 `directoryPath`，要支援 VS Code 側用戶端時要補。
+- 知識庫：`.note/server-wiki-index.md` 是 server 現況整理的索引（`.note` 已列入 `.gitignore`，不提交）。
