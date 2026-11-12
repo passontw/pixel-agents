@@ -66,6 +66,19 @@ _Avoid_: folder, workspace folder (that's the VS Code-contributed source, not th
 A named group of Directories in the standalone office. The office shows one workspace at a time, and only its agents. A Directory belongs to at most one workspace; one that no workspace claims belongs to the default workspace, which always exists and cannot be removed. An agent belongs to the workspace of the Directory it was launched in, or — for an adopted session — the Directory its working directory falls under. A teammate always belongs to its lead's workspace. Standalone only: the VS Code adapter has no workspaces, and every agent it shows counts as being in the default one.
 _Avoid_: project, folder group, VS Code workspace (that's the editor's own notion, unrelated; see Directory), room, office (the office is the whole canvas, not one workspace)
 
+**Role**（角色）:
+Rules the operator chooses for one agent at launch, appended to that agent's system prompt. A Role is a file in the Directory the agent launches into, `<Directory>/.claude/roles/<name>.md` — one file per Role, named by its file name; there is no registry, so adding or removing a Role means adding or removing the file, and same-named files in two Directories are two different Roles. Roles layer like CLAUDE.md: the folder's CLAUDE.md is the shared layer every agent there reads (loaded by Claude Code from the working directory, never managed by Pixel Agents), the Role is the layer only its own agent reads, so one Directory can run several agents with different Roles. A Role is rules attached at launch, not an identity: it does not make the agent a Lead or a Teammate, and it is never re-applied by a restore or restart. Unrelated to a Teammate's `agentType`, which Claude Agent Teams may call a "role". Standalone only.
+Mind the one-letter neighbour: `.claude/rules/` (with a U) is Claude Code's own folder, and every `.md` under it is loaded automatically into EVERY agent in that folder. A Role file placed there instead of in `.claude/roles/` stops being a Role and silently applies to all of them.
+_Avoid_: persona, profile, agent type (that's Claude Agent Teams' term), rules file (that's `.claude/rules/`)
+
+**Capability**:
+The in-memory identity credential Pixel Agents issues to an agent it launches in its own terminal, delivered in that terminal's environment only, saying "this is agent N of Workspace W". It guards against misuse, not against a hostile user: it is not a security boundary, since anything running as the same OS user can read it, and every process the agent starts inherits it. It is revoked when the agent's terminal ends, the agent is removed, or the agent changes Workspace — for good, so moving back does not revive it; removing a Workspace therefore permanently revokes its agents' capabilities, while editing a Workspace's Directories moves no running agent and revokes nothing. Never persisted, so a restart revokes them all. Standalone only, and issued only where knowledge-base features are enabled — no release issues one yet.
+_Avoid_: token alone (the server token is a different secret), API key, session
+
+**Curator**:
+The one agent the operator appoints to look after a Workspace. Chosen by the operator from the office, never decided by a Role, at most one per Workspace, and held in memory only — a restart starts with none. Only an agent holding a Capability for that Workspace can be appointed, and it stops being the curator the moment that Capability is revoked. Standalone only; while no Capability is issued, every appointment is refused as not eligible.
+_Avoid_: owner, admin, lead (that's the team relationship)
+
 **Adopt**:
 Begin tracking a session that was started outside the office. An adopted agent is a full citizen.
 _Avoid_: import, attach

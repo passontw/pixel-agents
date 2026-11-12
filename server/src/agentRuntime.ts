@@ -47,7 +47,7 @@ import {
   setHookProvider,
   setTeamSwitchCallback,
 } from './transcriptParser.js';
-import type { AgentState } from './types.js';
+import type { AgentState, PersistedAgent } from './types.js';
 import { settleWorkspaceFromCwd } from './workspaces.js';
 
 /** Callbacks that adapters register for platform-specific behavior. */
@@ -85,6 +85,8 @@ export class AgentRuntime {
   readonly subagentWatch: SubagentWatch;
   private hookEventHandler: HookEventHandler;
   private lifecycleCallbacks: RuntimeLifecycleCallbacks = {};
+  /** session 註冊變更的監聽者（阻擋式裁決的已知 session 清單用）。 */
+  private readonly sessionListeners = new Set<() => void>();
 
   constructor(
     private readonly store: AgentStateStore,
@@ -299,11 +301,32 @@ export class AgentRuntime {
   /** Register an agent with the hook event handler for session->agent mapping. */
   registerAgent(sessionId: string, agentId: number): void {
     this.hookEventHandler.registerAgent(sessionId, agentId);
+    this.notifySessionsChanged();
   }
 
   /** Unregister an agent from the hook event handler. */
   unregisterAgent(sessionId: string): void {
     this.hookEventHandler.unregisterAgent(sessionId);
+    this.notifySessionsChanged();
+  }
+
+  /**
+   * 每次 session 註冊或取消註冊之後呼叫（例如 /clear 換了 session id）。
+   * 回傳取消訂閱的函式。監聽者丟出的錯誤只記錄，不影響註冊本身。
+   */
+  onSessionsChanged(listener: () => void): () => void {
+    this.sessionListeners.add(listener);
+    return () => this.sessionListeners.delete(listener);
+  }
+
+  private notifySessionsChanged(): void {
+    for (const listener of [...this.sessionListeners]) {
+      try {
+        listener();
+      } catch (err) {
+        console.error('[Pixel Agents] Session change listener failed:', err);
+      }
+    }
   }
 
   // ── Agent removal (shared cleanup) ──
@@ -457,15 +480,11 @@ export class AgentRuntime {
     );
   }
 
-  /** Start stale external agent check (removes agents whose JSONL files are deleted). */
+  /** Start stale external agent check (removes agents whose JSONL files are deleted or long idle). */
   startStaleCheck(): void {
     if (this.staleCheckTimer) return;
 
-    this.staleCheckTimer = startStaleExternalAgentCheck(
-      this.store,
-      this.knownJsonlFiles,
-      this.hooksEnabled,
-    );
+    this.staleCheckTimer = startStaleExternalAgentCheck(this.store, this.knownJsonlFiles);
   }
 
   // ── Restore persisted external agents (standalone) ──
@@ -485,6 +504,13 @@ export class AgentRuntime {
     let maxId = 0;
 
     for (const p of persisted) {
+      // A stopped record has no transcript or process to look for: it comes back
+      // as it was, ready for `startAgent`. A running PTY agent never does.
+      if (p.stopped) {
+        this.restoreStoppedAgent(p);
+        if (p.id > maxId) maxId = p.id;
+        continue;
+      }
       if (!p.isExternal) continue;
       // Background-spawn children (a leadAgentId but no teamName) are derived
       // state: the 1s scan re-materializes them from sidecars while their spawn
@@ -561,6 +587,29 @@ export class AgentRuntime {
     }
 
     this.store.persist();
+  }
+
+  private restoreStoppedAgent(p: PersistedAgent): void {
+    if (this.store.has(p.id)) return;
+    if (!p.sessionId || !p.launchDirectory) return;
+    const agent = createAgentState({
+      id: p.id,
+      sessionId: p.sessionId,
+      isExternal: false,
+      projectDir: p.projectDir,
+      jsonlFile: p.jsonlFile,
+      directoryName: p.directoryName ?? p.folderName,
+      workspaceId: p.workspaceId,
+      displayName: p.displayName,
+      stopped: true,
+      launchDirectory: p.launchDirectory,
+      permissionRoles: p.permissionRoles,
+      palette: p.palette,
+      hueShift: p.hueShift,
+    });
+    assignPaletteIfNeeded(agent, this.store);
+    this.store.set(p.id, agent);
+    console.log(`[Pixel Agents] Restored stopped agent ${p.id} (${p.directoryName ?? 'no name'})`);
   }
 
   // ── Cleanup ──

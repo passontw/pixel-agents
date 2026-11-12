@@ -1,5 +1,7 @@
 import type * as vscode from 'vscode';
 
+import type { PermissionRoles } from './writeGuard/permissionRoles.js';
+
 export interface AgentState {
   id: number;
   sessionId: string;
@@ -30,6 +32,48 @@ export interface AgentState {
    *  settles the Workspace once. Runtime-only: never persisted, so a restart
    *  leaves the agent where it is. */
   workspaceCwdPending?: boolean;
+  /** Display name of the Role this agent was launched with (standalone only).
+   *  Runtime-only and display-only: never persisted, so no restore or restart
+   *  path can relaunch with a Role. The Role's content and hash never live here. */
+  roleName?: string;
+  /** S1b Role file name (roleId, e.g. `writer.md`) this agent was launched with
+   *  (standalone PTY agents only). Recorded at launch, never the display name;
+   *  it is the agent's personal KB identity key (writeGuard/kbIdentity.ts).
+   *  Runtime-only: PTY agents are never restored, so it is never persisted. */
+  roleId?: string;
+  /** realpath of the Directory a standalone PTY agent was launched into,
+   *  recorded at launch. KB rule ownership is decided by this, never by a hook
+   *  payload's cwd (which follows `cd`). Runtime-only, never persisted. */
+  directoryRealPath?: string;
+  /** Effective permission roles (P3, R/E/D as a set) snapshotted when a
+   *  standalone PTY agent launched: the launch override, else the Workspace
+   *  default, else null (no roles: everything allowed, as before P3). Changing
+   *  the Workspace default later never touches it. Persisted only on a stopped
+   *  record (it has to survive until `startAgent`); a running PTY agent is never
+   *  restored, so its snapshot is never written. Undefined on every other agent
+   *  = null. */
+  permissionRoles?: PermissionRoles;
+  /** Whether this standalone PTY session was launched with
+   *  `--dangerously-skip-permissions` (the bypassPermissions option the launcher
+   *  passed to buildLaunchCommand). Set on every PTY launch, new or a started
+   *  record. Runtime-only: never persisted, never broadcast. Undefined on every
+   *  other agent; task dispatch treats undefined as "launched with bypass". */
+  launchedWithBypass?: boolean;
+  /** Turns completed (turn end that set isWaiting) since THIS PTY session
+   *  started: reset to 0 on every PTY launch, new or a started record, so a
+   *  resumed record's stale isWaiting cannot count before a new turn ends.
+   *  Runtime-only: never persisted, never broadcast. */
+  turnsCompletedThisSession?: number;
+  /** Display name given when the agent was created (`createAgent`). Persisted
+   *  with the record; absent means the agent is labelled by its Directory. */
+  displayName?: string;
+  /** True for a record that exists with no process yet: created without
+   *  `start`, or restored after a restart. Persisted, so it survives a restart;
+   *  cleared when `startAgent` spawns the process. */
+  stopped?: boolean;
+  /** Path of the Directory a standalone agent runs in -- what `startAgent`
+   *  spawns into. Persisted only while stopped. */
+  launchDirectory?: string;
   /** Timestamp of last JSONL data received (ms since epoch) */
   lastDataAt: number;
   /** Total JSONL lines processed for this agent */
@@ -129,4 +173,12 @@ export interface PersistedAgent {
   hueShift?: number;
   /** Workspace the agent belongs to. Absent means the default Workspace. */
   workspaceId?: string;
+
+  // -- Stopped records (created, not yet started) --
+  displayName?: string;
+  /** True for a record with no process yet; only such records are restored as
+   *  startable agents (a running PTY agent never is). */
+  stopped?: boolean;
+  launchDirectory?: string;
+  permissionRoles?: readonly ('R' | 'E' | 'D')[] | null;
 }

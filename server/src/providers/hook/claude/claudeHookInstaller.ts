@@ -43,10 +43,10 @@ function getHookScriptPath(): string {
 
 /** Surfaced to the user when settings.json exists but cannot be parsed. The
  *  operation (install/uninstall) appends its own outcome suffix. */
-export const SETTINGS_UNPARSEABLE_MESSAGE = "Couldn't parse ~/.claude/settings.json";
+const SETTINGS_UNPARSEABLE_MESSAGE = "Couldn't parse ~/.claude/settings.json";
 
 /** Surfaced when settings.json keeps changing under us across all retry attempts. */
-export const SETTINGS_CONCURRENT_WRITE_MESSAGE =
+const SETTINGS_CONCURRENT_WRITE_MESSAGE =
   '~/.claude/settings.json is being modified by another process';
 
 /** The one write failure the mutate loop retries. A dedicated class rather than
@@ -64,7 +64,7 @@ class ConcurrentWriteError extends Error {
  *  The value is malformed but it is the USER's — replacing it with `[]` (what
  *  we used to do) silently destroys hand-written config, which is the same
  *  class of bug as rewriting an unparseable file. Refuse instead. */
-export function settingsNonArrayEventMessage(event: string): string {
+function settingsNonArrayEventMessage(event: string): string {
   return `hooks.${event} in ~/.claude/settings.json is not an array — fix or remove it`;
 }
 
@@ -72,7 +72,7 @@ export function settingsNonArrayEventMessage(event: string): string {
  *  rule one level up: writing our events onto it would either lose them
  *  silently (string keys on an array do not survive JSON.stringify) or crash
  *  with a raw TypeError. */
-export const SETTINGS_HOOKS_NOT_OBJECT_MESSAGE =
+const SETTINGS_HOOKS_NOT_OBJECT_MESSAGE =
   'hooks in ~/.claude/settings.json is not an object — fix or remove it';
 
 /** Raw file content, or null when the file does not exist. Throws on read errors. */
@@ -204,7 +204,7 @@ function isRegularFile(filePath: string): boolean {
 
 /** Surfaced when the backup path is occupied by something that is not a
  *  recoverable copy of settings.json. */
-export function settingsUnusableBackupMessage(backupPath: string): string {
+function settingsUnusableBackupMessage(backupPath: string): string {
   return `${backupPath} exists but is not a regular file, so no backup of settings.json could be made — move or remove it`;
 }
 
@@ -583,6 +583,36 @@ export function areHooksInstalled(): boolean {
   return Object.values(hooks).some(
     (entries) => Array.isArray(entries) && entries.some(entryHasOurHook),
   );
+}
+
+/**
+ * Whether the PreToolUse event holds one of our hook commands. Read-only, same
+ * identity rule and same unparseable-file answer (false) as areHooksInstalled,
+ * which cannot see a deleted PreToolUse entry while any other event of ours
+ * remains. Reads the file: callers cache it, never on the verdict path (F13).
+ */
+export function isPreToolUseHookInstalled(): boolean {
+  let settings: ClaudeSettings;
+  try {
+    settings = readClaudeSettings();
+  } catch {
+    return false;
+  }
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return false;
+  const entries = (hooks as Record<string, unknown>)['PreToolUse'];
+  return Array.isArray(entries) && entries.some(entryHasOurHook);
+}
+
+/** Whether the hook script file exists and is readable (copyHookScript may have
+ *  failed, or the file was removed). Read-only filesystem probe, cached by callers. */
+export function isHookScriptPresent(): boolean {
+  try {
+    fs.accessSync(getHookScriptPath(), fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

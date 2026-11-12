@@ -14,6 +14,7 @@
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 
+import { withoutCapabilityEnv } from '../capabilities.js';
 import {
   TERMINAL_DEFAULT_COLS,
   TERMINAL_DEFAULT_ROWS,
@@ -39,6 +40,14 @@ export interface CreatePtySessionOptions {
 export interface PtyExit {
   exitCode: number;
   signal?: number;
+}
+
+/** Terminal modes the headless mirror has parsed (read-only view). */
+export interface TerminalModes {
+  /** DECSET 2004: the program asked for pasted text to be bracketed. */
+  bracketedPaste: boolean;
+  /** The alternate screen buffer is active (a full-screen program). */
+  alternateScreen: boolean;
 }
 
 type DataListener = (chunk: string) => void;
@@ -126,6 +135,29 @@ export class PtySession {
         resolve(this.serializeAddon.serialize());
       });
     });
+  }
+
+  /**
+   * Run `callback` once every chunk received before this call has been parsed
+   * by the mirror (the same empty-write flush snapshot() relies on). Inside the
+   * callback, terminalModes() reflects all of that output. The callback runs
+   * synchronously from the mirror's write queue: whatever it does without an
+   * await happens before any later chunk is parsed.
+   */
+  afterParsed(callback: () => void): void {
+    this.mirror.write('', callback);
+  }
+
+  /**
+   * The mirror's current input modes, read-only. Only as fresh as the chunks
+   * parsed so far: call it inside afterParsed() for the state after a given
+   * point in the stream.
+   */
+  terminalModes(): TerminalModes {
+    return {
+      bracketedPaste: this.mirror.modes.bracketedPasteMode,
+      alternateScreen: this.mirror.buffer.active.type === 'alternate',
+    };
   }
 
   onData(listener: DataListener): () => void {
@@ -334,10 +366,13 @@ function spawnPty(
 ): IPty {
   // Drop undefined values: process.env is `string | undefined`-valued, but the
   // PTY env must be all-strings.
-  const env: Record<string, string> = {};
+  const inherited: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value;
+    if (value !== undefined) inherited[key] = value;
   }
+  // A capability is never inherited from the server's own environment: only
+  // the value the launcher puts in options.env reaches the PTY.
+  const env = { ...withoutCapabilityEnv(inherited) };
   Object.assign(env, options.env ?? {}, { TERM: TERMINAL_TERM_NAME });
 
   return module.spawn(options.command, options.args, {

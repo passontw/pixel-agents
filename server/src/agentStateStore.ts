@@ -31,11 +31,27 @@ function debugLogBroadcast(message: Record<string, unknown>): void {
   }
 }
 
+/**
+ * What moved an agent's session on: a JSONL user record that starts a turn
+ * (`userPrompt`) or carries tool results (`userRecord`), a PreToolUse hook
+ * (`toolStart`), or a completed turn (`turnEnd`).
+ */
+export type TurnActivityKind = 'userPrompt' | 'userRecord' | 'toolStart' | 'turnEnd';
+
 /** Typed event map for AgentStateStore. */
 export interface StoreEvents {
   agentAdded: (id: number, agent: AgentState) => void;
   agentRemoved: (id: number) => void;
   agentUpdated: (id: number, agent: AgentState, field: string) => void;
+  /** An agent's Workspace changed (undefined = the default). Emitted for every
+   *  agent a move touches, followers included. */
+  agentWorkspaceChanged: (id: number, workspaceId: string | undefined) => void;
+  /** clear() dropped every agent at once (no per-agent agentRemoved). */
+  agentsCleared: (ids: number[]) => void;
+  /** The agent's session moved on (see TurnActivityKind). Internal only, never
+   *  forwarded to a client; task dispatch releases its per-target in-flight
+   *  lock on it. */
+  agentTurnActivity: (id: number, kind: TurnActivityKind) => void;
   broadcast: (message: Record<string, unknown>) => void;
 }
 
@@ -144,6 +160,7 @@ export class AgentStateStore {
     const agent = this.agents.get(id);
     if (!agent || agent.workspaceId === next) return false;
     agent.workspaceId = next;
+    this.emitter.emit('agentWorkspaceChanged', id, next);
     this.broadcast({
       type: 'agentWorkspaceChanged',
       id,
@@ -164,7 +181,16 @@ export class AgentStateStore {
   }
 
   clear(): void {
+    const ids = [...this.agents.keys()];
     this.agents.clear();
+    if (ids.length > 0) {
+      this.emitter.emit('agentsCleared', ids);
+    }
+  }
+
+  /** Announce that an agent's session moved on (see StoreEvents.agentTurnActivity). */
+  noteTurnActivity(id: number, kind: TurnActivityKind): void {
+    this.emitter.emit('agentTurnActivity', id, kind);
   }
 
   // ── Broadcast (replaces direct webview.postMessage in server/) ─
@@ -210,6 +236,16 @@ export class AgentStateStore {
         palette: agent.palette,
         hueShift: agent.hueShift,
         workspaceId: agent.workspaceId,
+        // A stopped record is the only standalone agent that comes back after a
+        // restart, so it alone carries what `startAgent` needs.
+        ...(agent.stopped
+          ? {
+              stopped: true,
+              displayName: agent.displayName,
+              launchDirectory: agent.launchDirectory,
+              permissionRoles: agent.permissionRoles,
+            }
+          : {}),
       });
     }
     this.adapter.saveAgents(persisted);

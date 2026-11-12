@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { HooksConsentRequest } from '../../../core/src/messages.js';
+import type {
+  ClientMessage,
+  CuratorRejected,
+  CuratorsLoaded,
+  HooksConsentRequest,
+  WorkspaceCuratorChanged,
+} from '../../../core/src/messages.js';
+import type { AgentRoleNames } from '../agentRoles.js';
+import { mergeAgentRoleNames, withAgentRoleName } from '../agentRoles.js';
+import type { CuratorState } from '../curators.js';
+import {
+  applyCuratorRejected,
+  applyCuratorsLoaded,
+  applyWorkspaceCuratorChanged,
+  INITIAL_CURATORS,
+  noteCuratorRequest,
+} from '../curators.js';
 import { playDoneSound, playPermissionSound, setSoundEnabled } from '../notificationSound.js';
 import type { ExistingAgentMeta, PendingAgent } from '../office/engine/existingAgents.js';
 import { reconcileExistingAgents } from '../office/engine/existingAgents.js';
@@ -173,9 +189,13 @@ interface ExtensionMessageState {
   selectWorkspace: (workspaceId: string) => void;
   /** Last refused saveWorkspace/removeWorkspace. */
   workspaceRejection: WorkspaceRejection | null;
-  /** A read-only office (standalone without the server token): every change it
-   *  sends is refused, so the UI hides the controls that would send one. */
-  officeReadOnly: boolean;
+  /** Role display name per agent id (agents launched with a Role only). */
+  agentRoleNames: AgentRoleNames;
+  /** Workspace curators as the host reported them (standalone only; stays
+   *  unavailable under VS Code, which never sends curatorsLoaded). */
+  curators: CuratorState;
+  /** Send a curator request from an agent's card. */
+  requestCurator: (agentId: number, message: ClientMessage) => void;
   // Terminal (standalone only; always false/empty under VS Code, which owns its
   // own terminals and never sends these messages)
   terminalAvailable: boolean;
@@ -259,8 +279,12 @@ export function useExtensionMessages(
       updateWorkspaceView(selectWorkspace(workspaceViewRef.current, workspaceId)),
     [updateWorkspaceView],
   );
-  // Never sent under VS Code, so it stays false there.
-  const [officeReadOnly, setOfficeReadOnly] = useState(false);
+  const [agentRoleNames, setAgentRoleNames] = useState<AgentRoleNames>({});
+  const [curators, setCurators] = useState<CuratorState>(INITIAL_CURATORS);
+  const requestCurator = useCallback((agentId: number, message: ClientMessage) => {
+    setCurators((prev) => noteCuratorRequest(prev, agentId));
+    transport.send(message);
+  }, []);
   // Terminal control plane (standalone only; the server never sends these in
   // VS Code mode, so terminalAvailable stays false and no terminal UI renders).
   const [terminalAvailable, setTerminalAvailable] = useState(false);
@@ -329,11 +353,6 @@ export function useExtensionMessages(
         return;
       }
 
-      if (msg.type === 'officeAccess') {
-        setOfficeReadOnly(msg.readOnly === true);
-        return;
-      }
-
       if (msg.type === 'terminalAvailability') {
         setTerminalAvailable(msg.available as boolean);
         setTerminalUnavailableReason((msg.reason as string | undefined) ?? null);
@@ -391,6 +410,9 @@ export function useExtensionMessages(
         const teammateParentId = msg.parentAgentId as number | undefined;
         const teamName = msg.teamName as string | undefined;
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
+        setAgentRoleNames((prev) =>
+          withAgentRoleName(prev, id, msg.roleName as string | undefined),
+        );
         const nextWorkspaceView = applyAgentCreated(workspaceViewRef.current, {
           id,
           workspaceId: msg.workspaceId as string | undefined,
@@ -448,6 +470,7 @@ export function useExtensionMessages(
         // stale cleanup), and a tab for a gone agent would attach to nothing.
         setTerminalAgentIds((prev) => prev.filter((a) => a !== id));
         setAgentTools((prev) => omitKey(prev, id));
+        setAgentRoleNames((prev) => omitKey(prev, id));
         setAgentStatuses((prev) => omitKey(prev, id));
         setAgentAwaitingInput((prev) => omitKey(prev, id));
         setAgentSeenActivity((prev) => omitKey(prev, id));
@@ -484,6 +507,9 @@ export function useExtensionMessages(
         ) {
           saveAgentSeats(os);
         }
+        setAgentRoleNames((prev) =>
+          mergeAgentRoleNames(prev, msg.roleNames as Record<string, string> | undefined),
+        );
         updateWorkspaceView(
           applyExistingAgents(
             workspaceViewRef.current,
@@ -804,6 +830,12 @@ export function useExtensionMessages(
             msg.workspaceId as string,
           ),
         );
+      } else if (msg.type === 'curatorsLoaded') {
+        setCurators(applyCuratorsLoaded(msg as CuratorsLoaded));
+      } else if (msg.type === 'workspaceCuratorChanged') {
+        setCurators((prev) => applyWorkspaceCuratorChanged(prev, msg as WorkspaceCuratorChanged));
+      } else if (msg.type === 'curatorRejected') {
+        setCurators((prev) => applyCuratorRejected(prev, msg as CuratorRejected));
       } else if (msg.type === 'directorySuggestions') {
         setDirectorySuggestions((msg.paths ?? []) as string[]);
       } else if (msg.type === 'directorySaved') {
@@ -994,7 +1026,9 @@ export function useExtensionMessages(
     workspaceView,
     selectWorkspace: handleSelectWorkspace,
     workspaceRejection,
-    officeReadOnly,
+    agentRoleNames,
+    curators,
+    requestCurator,
     terminalAvailable,
     terminalUnavailableReason,
     terminalAgentIds,

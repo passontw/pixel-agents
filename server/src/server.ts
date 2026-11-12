@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import type { AgentRuntime } from './agentRuntime.js';
 import type { AgentStateStore } from './agentStateStore.js';
+import type { CapabilityRegistry } from './capabilities.js';
 import type {
   AssetCache,
   ReloadAssetsSideEffect,
@@ -17,12 +18,14 @@ import {
   SERVER_REGISTRY_PROTOCOL_VERSION,
   SERVERS_DIR,
 } from './constants.js';
+import type { CuratorTable } from './curators.js';
 import { createHttpServer } from './httpServer.js';
 import type { ServerConfig, StandaloneAccess } from './serverConfig.js';
 import { isServerConfig, isServerTarget, sameStandaloneAccess } from './serverConfig.js';
-import { loadOrCreateStandaloneToken } from './serverToken.js';
 import type { PtySessionManager } from './terminal/ptySessionManager.js';
-import { normalizeHostname } from './wsAuth.js';
+import { pruneDeadGuardLists } from './writeGuard/guardList.js';
+import type { GuardStatusReporter } from './writeGuard/guardStatusReporter.js';
+import type { WriteGuard } from './writeGuard/writeGuard.js';
 
 export type { ServerConfig } from './serverConfig.js';
 
@@ -36,7 +39,8 @@ type HookEventCallback = (providerId: string, event: Record<string, unknown>) =>
  * Routes (via Fastify in httpServer.ts):
  * - `POST /api/hooks/:providerId` -- hook event (auth required, 64KB body limit)
  * - `GET /api/health` -- health check (no auth)
- * - `GET /ws` -- WebSocket for real-time agent state (auth required)
+ * - `GET /ws` -- WebSocket for real-time agent state (Bearer auth in embedded
+ *   mode; a same-origin check in standalone)
  *
  * Discovery: writes `~/.pixel-agents/server.json` (legacy single-target pointer)
  * and `~/.pixel-agents/servers/<pid>-<port>.json` (multi-server registry entry)
@@ -52,6 +56,8 @@ export class PixelAgentsServer {
   private config: ServerConfig | null = null;
   private ownsServer = false;
   private callback: HookEventCallback | null = null;
+  /** 正在發佈清單的裁決器（只有自己啟動的 standalone 伺服器才有）。 */
+  private writeGuard: WriteGuard | null = null;
 
   /** Register a callback for incoming hook events from any provider. */
   onHookEvent(callback: HookEventCallback): void {
@@ -73,42 +79,33 @@ export class PixelAgentsServer {
     onSetHooksEnabled?: SetHooksEnabledSideEffect;
     onReloadAssets?: ReloadAssetsSideEffect;
     ptyManager?: PtySessionManager;
-    /** Extra privileged Host names (standalone; see wsAuth.privilegedHostnames). */
-    allowedHosts?: readonly string[];
-    /** Replace the persisted standalone token, revoking every URL that carried
-     *  the old one. Refused while another standalone server is running: it
-     *  would keep honouring the old token until it restarts. */
-    rotateToken?: boolean;
+    /** Per-agent capabilities and Workspace curators (standalone, in memory). */
+    capabilities?: CapabilityRegistry;
+    curators?: CuratorTable;
+    /** 阻擋式裁決與清單發佈（standalone 限定；內嵌模式忽略，不寫清單）。 */
+    writeGuard?: WriteGuard;
+    /** agentGuardStatus 回報（standalone 限定；內嵌模式忽略）。 */
+    guardStatus?: GuardStatusReporter;
+    /** Task dispatch's stdio shim (standalone only): the feature's one switch. */
+    taskDispatchShimPath?: string;
   }): Promise<ServerConfig> {
     const embedded = options?.embedded ?? true;
     const wantsSpa = !embedded;
     const host = options?.host ?? '127.0.0.1';
     const standalone: StandaloneAccess | undefined = embedded
       ? undefined
-      : {
-          terminal: options?.ptyManager?.enabled ?? false,
-          host,
-          allowedHosts: normalizedAllowedHosts(options?.allowedHosts ?? []),
-        };
+      : { terminal: options?.ptyManager?.enabled ?? false, host };
 
     // Capability-based reuse: an embedded (VS Code) caller only reuses another
     // embedded server (today's multi-window sharing); a standalone caller only
     // reuses another standalone -- never across the boundary, which is what
     // used to leave a standalone attached to VS Code's SPA-less embedded
     // server (blank page). A standalone caller additionally requires the SAME
-    // access (terminal on/off, bind host, allowed hosts): reusing a server with
-    // a shell for a `--no-terminal` launch would make the opt-out a lie. Prune
-    // dead entries first so a crashed server's stale file never blocks
-    // discovery of a live one.
+    // access (terminal on/off, bind host): reusing a server with a shell for a
+    // `--no-terminal` launch would make the opt-out a lie. Prune dead entries
+    // first so a crashed server's stale file never blocks discovery of a live
+    // one.
     const registry = this.readAndPruneRegistry();
-    if (options?.rotateToken && !embedded) {
-      const running = registry.find((e) => e.servesSpa);
-      if (running) {
-        throw new Error(
-          `A standalone server is already running (PID ${running.pid}, port ${running.port}) and would keep accepting the old token. Stop it, then run --rotate-token again.`,
-        );
-      }
-    }
     const candidate = registry.find(
       (e) => e.servesSpa === wantsSpa && sameStandaloneAccess(e.standalone, standalone),
     );
@@ -121,13 +118,9 @@ export class PixelAgentsServer {
       return candidate;
     }
 
-    // Start our own server
-    // Standalone keeps one token across restarts so the tokened URL the CLI
-    // prints stays valid; embedded hands its token to the webview in-process and
-    // gains nothing from persistence.
-    const token = embedded
-      ? crypto.randomUUID()
-      : loadOrCreateStandaloneToken({ rotate: options?.rotateToken ?? false });
+    // Start our own server. The token authenticates hook ingress (the hook
+    // script reads it from server.json) and, in embedded mode, the /ws Bearer.
+    const token = crypto.randomUUID();
     const store = options?.store;
 
     const { app, port } = await createHttpServer({
@@ -143,7 +136,11 @@ export class PixelAgentsServer {
       onSetHooksEnabled: options?.onSetHooksEnabled,
       onReloadAssets: options?.onReloadAssets,
       ptyManager: options?.ptyManager,
-      allowedHosts: standalone?.allowedHosts,
+      capabilities: options?.capabilities,
+      curators: options?.curators,
+      writeGuard: embedded ? undefined : options?.writeGuard,
+      guardStatus: embedded ? undefined : options?.guardStatus,
+      taskDispatchShimPath: embedded ? undefined : options?.taskDispatchShimPath,
     });
 
     this.app = app;
@@ -166,6 +163,13 @@ export class PixelAgentsServer {
     // entry (new hook scripts fan out to every entry here).
     this.writeServerJson(this.config);
     this.writeRegistryEntry(this.config);
+    // 清單與 registry 項目同名；先清掉當機伺服器的殘檔，再發佈自己的。
+    // 內嵌伺服器從不寫清單（分流：規則只對 standalone 生效）。
+    if (!embedded && options?.writeGuard) {
+      pruneDeadGuardLists(os.homedir(), isProcessRunning);
+      options.writeGuard.publish({ pid: this.config.pid, port });
+      this.writeGuard = options.writeGuard;
+    }
     console.log(`[Pixel Agents] Server: listening on 127.0.0.1:${port}`);
 
     return this.config;
@@ -181,6 +185,8 @@ export class PixelAgentsServer {
       this.deleteServerJson();
       this.deleteRegistryEntry();
     }
+    this.writeGuard?.unpublish();
+    this.writeGuard = null;
     this.config = null;
     this.ownsServer = false;
   }
@@ -316,14 +322,6 @@ export class PixelAgentsServer {
       // File may already be gone
     }
   }
-}
-
-/** Allowed hosts as compared and recorded: normalized, de-duplicated, sorted,
- *  so `--allowed-host A --allowed-host b` and `--allowed-host B --allowed-host a`
- *  describe the same server. */
-function normalizedAllowedHosts(hosts: readonly string[]): string[] {
-  const names = hosts.map((h) => normalizeHostname(h)).filter((h): h is string => h !== null);
-  return [...new Set(names)].sort();
 }
 
 /** Check if a process is alive by sending signal 0 (no-op, just checks existence). */

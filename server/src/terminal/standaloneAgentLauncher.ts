@@ -15,17 +15,30 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { DEFAULT_WORKSPACE_ID } from '../../../core/src/constants.js';
 import type { HookProvider } from '../../../core/src/provider.js';
 import type { AgentRuntime } from '../agentRuntime.js';
 import { createAgentState } from '../agentState.js';
 import type { AgentStateStore } from '../agentStateStore.js';
-import { JSONL_POLL_INTERVAL_MS } from '../constants.js';
+import type { CapabilityRegistry } from '../capabilities.js';
+import { withoutCapabilityEnv, workspaceKey } from '../capabilities.js';
+import {
+  CAPABILITY_ENV_NAME,
+  JSONL_POLL_INTERVAL_MS,
+  TASK_DISPATCH_PORT_ENV_NAME,
+} from '../constants.js';
 import { directoryNameForLaunch } from '../directories.js';
 import { startFileWatching } from '../fileWatcher.js';
 import { directoryNameFor, hostDirectory } from '../hostDirectory.js';
 import { assignPaletteIfNeeded } from '../paletteAssigner.js';
+import { isValidRoleId } from '../roles.js';
+import { removeRoleSnapshot } from '../roleStorage.js';
+import type { TaskDispatchLaunch } from '../taskDispatch/launchConfig.js';
+import { taskDispatchMcpConfig } from '../taskDispatch/launchConfig.js';
 import type { AgentState } from '../types.js';
-import { workspaceIdForDirectory } from '../workspaces.js';
+import { workspaceIdForDirectory, workspacePermissionRoles } from '../workspaces.js';
+import type { PermissionRoles } from '../writeGuard/permissionRoles.js';
+import { effectivePermissionRoles } from '../writeGuard/permissionRoles.js';
 import type { PtySessionManager } from './ptySessionManager.js';
 
 export interface LaunchStandaloneAgentDeps {
@@ -33,7 +46,30 @@ export interface LaunchStandaloneAgentDeps {
   runtime: AgentRuntime;
   ptyManager: PtySessionManager;
   provider: HookProvider;
+  /**
+   * Whether agents launched into this (normalized) Workspace get a capability.
+   * Injected only; absent means never. It is deliberately not read from the
+   * environment or a global setting, so no configuration can turn issuing on
+   * behind the caller's back (S2 ships with no caller passing it).
+   */
+  isKbEnabled?: (workspaceId: string) => boolean;
+  /** Where capabilities are issued and verified. Absent: none is issued. */
+  capabilities?: CapabilityRegistry;
+  /**
+   * THE task-dispatch switch (one dep, for rollback). Present together with
+   * `capabilities`: a launch into a NON-default Workspace is issued a
+   * capability, gets PIXEL_AGENTS_PORT in its env and the stdio shim through
+   * `--mcp-config`. Absent: exactly the launch as before. The default
+   * Workspace never gets any of it.
+   */
+  taskDispatch?: TaskDispatchLaunch;
 }
+
+/** The provider's launch options plus task dispatch's `--mcp-config` JSON
+ *  (the Claude provider reads it; see ClaudeLaunchOptions). */
+type LaunchCommandOptions = NonNullable<
+  Parameters<NonNullable<HookProvider['buildLaunchCommand']>>[2]
+> & { mcpConfig?: string };
 
 export interface LaunchStandaloneAgentOptions {
   /** Path of the Directory to launch into. Defaults to the server's cwd, which
@@ -44,6 +80,29 @@ export interface LaunchStandaloneAgentOptions {
   bypassPermissions?: boolean;
   cols?: number;
   rows?: number;
+  /**
+   * The Role this agent launches with, already validated, trusted and copied by
+   * the caller (roleClientMessages.ts). Absent: the launch is exactly the
+   * pre-Role one. The snapshot is owned from here on: removed on every failure
+   * path below and when the agent's process exits. `roleId` is the Role's file
+   * name, recorded on the agent as its personal KB identity key; a launch whose
+   * roleId fails the Role allowlist is refused before anything starts.
+   */
+  role?: { name: string; roleId: string; snapshotPath: string };
+  /**
+   * P3 permission-role override, already validated by the caller: an array is
+   * the agent's R/E/D roles, null means no roles (everything allowed). Absent:
+   * the Workspace default, else null. The result is snapshotted onto the agent
+   * here and never re-read, so a later Workspace change leaves it alone.
+   */
+  permissionRoles?: PermissionRoles;
+  /**
+   * Start an existing stopped record instead of creating an agent: its id and
+   * session id are reused, and `resume` continues its conversation (the
+   * transcript already exists) rather than starting a fresh one. A failure
+   * leaves the record exactly as it was.
+   */
+  existing?: { id: number; sessionId: string; resume: boolean };
 }
 
 /**
@@ -55,31 +114,111 @@ export function launchStandaloneAgent(
   options: LaunchStandaloneAgentOptions = {},
 ): number | null {
   const { store, runtime, ptyManager, provider } = deps;
+  const { role } = options;
+  const releaseRoleSnapshot = (): void => {
+    if (role) removeRoleSnapshot(role.snapshotPath);
+  };
+
+  // The identity key must be a listed Role file name: never a path, never `..`.
+  if (role && !isValidRoleId(role.roleId)) {
+    console.error('[Pixel Agents] Terminal: cannot launch -- invalid Role id');
+    releaseRoleSnapshot();
+    return null;
+  }
 
   if (!ptyManager.isAvailable()) {
     console.error(`[Pixel Agents] Terminal: cannot launch -- ${ptyManager.unavailableReason()}`);
+    releaseRoleSnapshot();
     return null;
   }
 
   const cwd = options.directoryPath ?? process.cwd();
-  const sessionId = crypto.randomUUID();
+  const { existing } = options;
+  const sessionId = existing?.sessionId ?? crypto.randomUUID();
 
-  const launch = provider.buildLaunchCommand?.(sessionId, cwd, {
-    bypassPermissions: options.bypassPermissions,
-  });
+  // Computed once and shared by the capability and the agent, so the two can
+  // never disagree about where the agent was launched. From the Directory the
+  // launch names, never from the server cwd: a launch with no directoryPath
+  // (or one no Workspace owns) belongs to the default.
+  const workspaceId = workspaceIdForDirectory(options.directoryPath);
+  const workspace = workspaceKey(workspaceId);
+  // Task dispatch: only with the switch AND a registry, and never into the
+  // default Workspace.
+  const dispatchLaunch =
+    deps.taskDispatch !== undefined &&
+    deps.capabilities !== undefined &&
+    workspace !== DEFAULT_WORKSPACE_ID
+      ? deps.taskDispatch
+      : undefined;
+  const mcpConfig = dispatchLaunch ? taskDispatchMcpConfig(dispatchLaunch.shimPath) : undefined;
+
+  // Without a Role the options object is exactly the pre-Role one, so the
+  // command is byte-for-byte what it always was (and without task dispatch it
+  // carries no mcpConfig key at all).
+  const launchOptions: LaunchCommandOptions = role
+    ? { bypassPermissions: options.bypassPermissions, appendSystemPromptFile: role.snapshotPath }
+    : existing
+      ? { bypassPermissions: options.bypassPermissions, resume: existing.resume }
+      : { bypassPermissions: options.bypassPermissions };
+  if (mcpConfig !== undefined) launchOptions.mcpConfig = mcpConfig;
+  const launch = provider.buildLaunchCommand?.(sessionId, cwd, launchOptions);
   if (!launch) {
     console.error('[Pixel Agents] Terminal: provider.buildLaunchCommand is not implemented');
+    releaseRoleSnapshot();
     return null;
   }
 
-  const dirs = provider.getSessionDirs?.(cwd) ?? [];
+  let dirs: string[];
+  try {
+    dirs = provider.getSessionDirs?.(cwd) ?? [];
+  } catch (err) {
+    // Rethrown unchanged (a launch without a Role behaves as it always did);
+    // only the snapshot is released first.
+    releaseRoleSnapshot();
+    throw err;
+  }
   if (dirs.length === 0) {
     console.error('[Pixel Agents] Terminal: provider returned no session dirs');
+    releaseRoleSnapshot();
     return null;
   }
   const projectDir = dirs[0];
 
-  const id = store.nextAgentId.current++;
+  // KB rule ownership (writeGuard/kbState.ts): recorded once here, never taken
+  // from a hook payload's cwd. Undefined only when the Directory cannot be
+  // resolved, in which case the PTY spawn below fails as well.
+  const directoryRealPath = realpathOrUndefined(cwd);
+  // Permission roles (P3): snapshotted once here, like the Directory above.
+  const permissionRoles = effectivePermissionRoles(
+    options.permissionRoles,
+    workspacePermissionRoles(workspaceId),
+  );
+  // A provider that ignored mcpConfig gets no capability through it: the
+  // shim must really be in the command before a token goes into the env.
+  const dispatchArmed = mcpConfig !== undefined && launch.args.includes(mcpConfig);
+  if (mcpConfig !== undefined && !dispatchArmed) {
+    console.warn('[Pixel Agents] Terminal: provider ignored the task-dispatch MCP config');
+  }
+  // Only a caller that injected the registry and either the task-dispatch
+  // switch (non-default Workspace, shim in the command) or isKbEnabled can get
+  // a capability; the default is a launch exactly as before.
+  const capabilities =
+    dispatchArmed || deps.isKbEnabled?.(workspace) === true ? deps.capabilities : undefined;
+
+  const id = existing?.id ?? store.nextAgentId.current++;
+
+  const grant = capabilities?.issue({ agentId: id, sessionId, workspaceId });
+  // Layered last, so nothing the provider returns can replace them. The port
+  // is the launching server's own (non-secret); the token is the secret.
+  const env = grant
+    ? {
+        ...withoutCapabilityEnv(launch.env ?? {}),
+        ...(dispatchArmed && dispatchLaunch
+          ? { [TASK_DISPATCH_PORT_ENV_NAME]: String(dispatchLaunch.port) }
+          : {}),
+        [CAPABILITY_ENV_NAME]: grant.token,
+      }
+    : launch.env;
 
   let session;
   try {
@@ -88,21 +227,134 @@ export function launchStandaloneAgent(
       command: launch.command,
       args: launch.args,
       cwd,
-      env: launch.env,
+      env,
       cols: options.cols,
       rows: options.rows,
     });
   } catch (err) {
-    // Roll the id back so a failed spawn doesn't burn an agent id.
-    store.nextAgentId.current--;
+    // Roll the id back so a failed spawn doesn't burn an agent id (a started
+    // record keeps its own id and stays a record).
+    if (!existing) store.nextAgentId.current--;
+    grant?.revoke();
     console.error(`[Pixel Agents] Terminal: spawn failed: ${String(err)}`);
+    releaseRoleSnapshot();
     return null;
   }
+
+  // Revocation rides the process from the very first moment it exists, before
+  // anything below can throw: a capability never outlives its PTY.
+  if (grant) session.onExit(() => grant.revoke());
+
+  let agent: AgentState;
+  try {
+    agent = registerLaunchedAgent(deps, {
+      id,
+      sessionId,
+      cwd,
+      projectDir,
+      workspaceId,
+      role,
+      directoryRealPath,
+      permissionRoles,
+      launchedWithBypass: options.bypassPermissions === true,
+      existing: existing !== undefined,
+    });
+  } catch (err) {
+    // A throwing store listener (or broadcast subscriber) must not leave a
+    // live PTY, a valid capability or a half-registered agent behind.
+    ptyManager.dispose(id);
+    grant?.revoke();
+    releaseRoleSnapshot();
+    try {
+      if (existing) {
+        const record = store.get(id);
+        if (record) record.stopped = true;
+        runtime.unregisterAgent(sessionId);
+      } else if (store.has(id)) {
+        runtime.unregisterAgent(sessionId);
+        runtime.removeAgent(id);
+      }
+    } catch {
+      // Best effort: the same listener may throw again.
+    }
+    console.error(`[Pixel Agents] Terminal: Agent ${id} - registration failed: ${String(err)}`);
+    return null;
+  }
+
+  console.log(
+    `[Pixel Agents] Terminal: Agent ${id} - spawned ${launch.command} (pid ${session.pid}) in ${cwd}`,
+  );
+
+  // The terminal closing is this surface's equivalent of VS Code's
+  // "terminal closed -> clean up orphan" pass in fileWatcher.
+  session.onExit((exit) => {
+    console.log(`[Pixel Agents] Terminal: Agent ${id} - exited (code ${exit.exitCode})`);
+    // claude re-reads the file after a compaction, so the snapshot lives
+    // exactly as long as the process does.
+    releaseRoleSnapshot();
+    store.broadcast({ type: 'terminalSessionClosed', agentId: id, exitCode: exit.exitCode });
+    if (store.has(id)) {
+      runtime.unregisterAgent(agent.sessionId);
+      runtime.closeAgent(id);
+    }
+  });
+
+  if (existing?.resume) {
+    // The transcript already holds the conversation so far: watch from its end,
+    // or the whole history would replay as live tool activity.
+    try {
+      agent.fileOffset = fs.statSync(agent.jsonlFile).size;
+    } catch {
+      /* no transcript after all: the poll below waits for it */
+    }
+  }
+  startJsonlPoll(deps, id, agent);
+
+  return id;
+}
+
+/**
+ * Everything between a successful spawn and the exit handler: the agent's
+ * state, its registration, and the terminal announcement. Split out so the
+ * launcher can undo a failure anywhere in it as one unit.
+ */
+function registerLaunchedAgent(
+  deps: LaunchStandaloneAgentDeps,
+  launched: {
+    id: number;
+    sessionId: string;
+    cwd: string;
+    projectDir: string;
+    workspaceId: string | undefined;
+    role: LaunchStandaloneAgentOptions['role'];
+    directoryRealPath: string | undefined;
+    permissionRoles: PermissionRoles;
+    /** The bypassPermissions option given to buildLaunchCommand, as recorded. */
+    launchedWithBypass: boolean;
+    /** The agent's record already exists (it was stopped): update it in place. */
+    existing: boolean;
+  },
+): AgentState {
+  const { store, runtime, provider } = deps;
+  const {
+    id,
+    sessionId,
+    cwd,
+    projectDir,
+    workspaceId,
+    role,
+    directoryRealPath,
+    permissionRoles,
+    launchedWithBypass,
+    existing,
+  } = launched;
 
   // Pre-register the expected JSONL so the project scanner doesn't mistake it
   // for a /clear file, exactly as the VS Code path does.
   const expectedFile = path.join(projectDir, `${sessionId}.jsonl`);
   runtime.knownJsonlFiles.add(expectedFile);
+
+  if (existing) return startRecord(deps, launched);
 
   const agent = createAgentState({
     id,
@@ -120,9 +372,20 @@ export function launchStandaloneAgent(
     // for a cwd that is no Directory at all.
     directoryName: directoryNameForLaunch(cwd, [hostDirectory()]) ?? directoryNameFor(cwd),
     providerId: provider.id,
-    // From the Directory the launch names, never from the server cwd: a launch
-    // with no directoryPath (or one no Workspace owns) belongs to the default.
-    workspaceId: workspaceIdForDirectory(options.directoryPath),
+    workspaceId,
+    // Display only, runtime only: never persisted, so no restore or restart
+    // path can bring a Role back.
+    roleName: role?.name,
+    // Runtime only, like roleName: the KB identity key and the Directory the
+    // rules attribute this agent to.
+    roleId: role?.roleId,
+    directoryRealPath,
+    // Runtime only: the R/E/D snapshot the write guard reads (never persisted).
+    permissionRoles,
+    // Runtime only (task dispatch): this PTY session's bypass posture and the
+    // turns it has completed so far.
+    launchedWithBypass,
+    turnsCompletedThisSession: 0,
   });
 
   // Server-side, like every other creation path: the palette rides the
@@ -135,29 +398,50 @@ export function launchStandaloneAgent(
   runtime.registerAgent(sessionId, id);
   store.persist();
 
-  console.log(
-    `[Pixel Agents] Terminal: Agent ${id} - spawned ${launch.command} (pid ${session.pid}) in ${cwd}`,
-  );
-
   // Tell the UI a terminal exists for this agent, so the drawer opens a tab.
   // A separate message (rather than a field on agentCreated) keeps the protocol
   // change additive for the sibling branches.
   store.broadcast({ type: 'terminalSessionOpened', agentId: id });
+  return agent;
+}
 
-  // The terminal closing is this surface's equivalent of VS Code's
-  // "terminal closed -> clean up orphan" pass in fileWatcher.
-  session.onExit((exit) => {
-    console.log(`[Pixel Agents] Terminal: Agent ${id} - exited (code ${exit.exitCode})`);
-    store.broadcast({ type: 'terminalSessionClosed', agentId: id, exitCode: exit.exitCode });
-    if (store.has(id)) {
-      runtime.unregisterAgent(agent.sessionId);
-      runtime.closeAgent(id);
-    }
-  });
+/** Bring a stopped record to life: the process now exists, the rest of the record stays. */
+function startRecord(
+  deps: LaunchStandaloneAgentDeps,
+  launched: Parameters<typeof registerLaunchedAgent>[1],
+): AgentState {
+  const { store, runtime } = deps;
+  const { id, sessionId, projectDir, directoryRealPath, permissionRoles, launchedWithBypass } =
+    launched;
+  const agent = store.get(id);
+  if (!agent) throw new Error(`Agent ${id} has no record to start`);
 
-  startJsonlPoll(deps, id, agent);
+  const expectedFile = path.join(projectDir, `${sessionId}.jsonl`);
+  runtime.knownJsonlFiles.add(expectedFile);
+  agent.stopped = false;
+  agent.launchDirectory = undefined;
+  agent.projectDir = projectDir;
+  agent.jsonlFile = expectedFile;
+  agent.directoryRealPath = directoryRealPath;
+  agent.permissionRoles = permissionRoles;
+  // A new PTY session: its own bypass posture, and no turn completed in it yet
+  // (a resumed record's isWaiting/permissionSent are left over from before).
+  agent.launchedWithBypass = launchedWithBypass;
+  agent.turnsCompletedThisSession = 0;
 
-  return id;
+  runtime.activeAgentId.current = id;
+  runtime.registerAgent(sessionId, id);
+  store.persist();
+  store.broadcast({ type: 'terminalSessionOpened', agentId: id });
+  return agent;
+}
+
+function realpathOrUndefined(directory: string): string | undefined {
+  try {
+    return fs.realpathSync(directory);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -165,8 +449,9 @@ export function launchStandaloneAgent(
  *
  * Hooks (the default) already route by sessionId, so this is what backfills tool
  * content and keeps hooks-off standalone working at all. Unlike the VS Code
- * path this does NOT implement /resume reassignment -- standalone always spawns
- * a fresh --session-id, so there's no resume case to detect here.
+ * path this does NOT implement /resume reassignment: a started record resumes
+ * with `--resume <its own session id>`, which keeps that id (only
+ * --fork-session mints a new one), so the transcript file never changes.
  */
 function startJsonlPoll(deps: LaunchStandaloneAgentDeps, id: number, agent: AgentState): void {
   const { store, runtime } = deps;

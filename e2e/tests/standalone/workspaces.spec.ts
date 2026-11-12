@@ -1,8 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { Page } from '@playwright/test';
-
 import { expect, test } from '../../fixtures/standalone';
 import { permissionRequest, preToolUseBash } from '../../helpers/hooks';
 import {
@@ -10,12 +8,8 @@ import {
   claudeScenario,
   waitForClaudeHookSetup,
 } from '../../helpers/mock-claude';
-import {
-  expectOverlayCount,
-  expectOverlayVisibleWithTexts,
-  getAgentOverlays,
-} from '../../helpers/office';
-import { addDirectory, openLaunchDrawer, setSettings } from '../../helpers/webview';
+import { expectOverlayCount, expectOverlayVisibleWithTexts } from '../../helpers/office';
+import { addDirectory, chooseNoRole, openLaunchDrawer, setSettings } from '../../helpers/webview';
 import {
   createWorkspace,
   getAgentCards,
@@ -31,8 +25,7 @@ import {
 /**
  * Workspaces in the standalone browser office: tabs that filter the office to
  * one group of Directories' agents, a modal that creates / edits / deletes
- * them, a server rebroadcast that reaches every open office, and a read-only
- * view that is shown none of the controls.
+ * them, and a server rebroadcast that reaches every open office.
  *
  * Agent-driven cases run the real PTY with the mock claude (e2e/README.md
  * "Mocking model & rules"): the scenario performs every timed action and the
@@ -47,17 +40,6 @@ function makeDirectory(workspaceDir: string, folder: string): string {
   const target = path.join(workspaceDir, folder);
   fs.mkdirSync(target, { recursive: true });
   return target;
-}
-
-async function openBareUrl(page: Page): Promise<Page> {
-  const bareUrl = new URL(page.url());
-  bareUrl.search = '';
-  const spectator = await page.context().newPage();
-  await spectator.addInitScript(() => {
-    (window as unknown as { __PIXEL_AGENTS_E2E?: boolean }).__PIXEL_AGENTS_E2E = true;
-  });
-  await spectator.goto(bareUrl.toString());
-  return spectator;
 }
 
 test.describe('Standalone / workspaces', () => {
@@ -111,34 +93,6 @@ test.describe('Standalone / workspaces', () => {
     await expect(getWorkspaceTab(other, 'Default')).toHaveAttribute('aria-selected', 'true');
     await other.close();
   });
-
-  test('a view-only office shows the tabs but no + and no edit control @area:standalone', async ({
-    page,
-    standalone: _standalone,
-  }) => {
-    await waitForWorkspaceSwitcher(page);
-    await createWorkspace(page, WORKSPACE_NAME);
-    await selectWorkspaceTab(page, WORKSPACE_NAME);
-    // The privileged office, for contrast: it has both controls.
-    await expect(getNewWorkspaceButton(page)).toBeVisible();
-    await expect(
-      getWorkspaceSwitcher(page).getByRole('button', { name: `Edit ${WORKSPACE_NAME}` }),
-    ).toBeVisible();
-
-    const spectator = await openBareUrl(page);
-    try {
-      await waitForWorkspaceSwitcher(spectator);
-      await expect(getWorkspaceTab(spectator, WORKSPACE_NAME)).toBeVisible();
-      await selectWorkspaceTab(spectator, WORKSPACE_NAME);
-      await expect(getNewWorkspaceButton(spectator)).toHaveCount(0);
-      await expect(
-        getWorkspaceSwitcher(spectator).getByRole('button', { name: /^Edit / }),
-      ).toHaveCount(0);
-      await expect(getAgentOverlays(spectator)).toHaveCount(0);
-    } finally {
-      await spectator.close();
-    }
-  });
 });
 
 /** Terminal-driven: the PTY runs the mock claude, the scenario drives the rest. */
@@ -172,6 +126,7 @@ test.describe('Standalone / workspaces with agents', () => {
     await selectWorkspaceTab(page, WORKSPACE_NAME);
     const drawer = await openLaunchDrawer(page);
     await drawer.getByRole('button', { name: DIRECTORY_NAME, exact: true }).click();
+    await chooseNoRole(page);
     await expectOverlayVisibleWithTexts(page, ['Running: npm test', DIRECTORY_NAME]);
     await expectOverlayCount(page, 1);
     await expect(getAgentCards(page)).toHaveCount(1);
@@ -225,6 +180,7 @@ test.describe('Standalone / workspaces with agents', () => {
     await selectWorkspaceTab(page, WORKSPACE_NAME);
     const drawer = await openLaunchDrawer(page);
     await drawer.getByRole('button', { name: DIRECTORY_NAME, exact: true }).click();
+    await chooseNoRole(page);
     await expectOverlayCount(page, 1);
 
     // Acceptance 6: the agent is out of sight, so what it waits on is on its tab.

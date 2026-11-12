@@ -32,7 +32,6 @@ export type ServerMessage =
   | FloorTilesLoaded
   | WallTilesLoaded
   | CarpetTilesLoaded
-  | OfficeAccess
   | SettingsLoaded
   | BypassPermissionsUpdated
   | HooksStatus
@@ -46,6 +45,18 @@ export type ServerMessage =
   | WorkspacesLoaded
   | WorkspaceRejected
   | AgentWorkspaceChanged
+  | CuratorsLoaded
+  | WorkspaceCuratorChanged
+  | CuratorBindingChanged
+  | CuratorRejected
+  | AgentGuardStatus
+  | RolesAvailable
+  | RolePreview
+  | RoleConfirmed
+  | RoleRejected
+  | KbFilesListed
+  | KbFileRead
+  | KbRejected
   | TerminalAvailability
   | TerminalSessionOpened
   | TerminalSessionClosed
@@ -54,6 +65,8 @@ export type ServerMessage =
 export type ClientMessage =
   | WebviewReady
   | LaunchAgent
+  | CreateAgent
+  | StartAgent
   | FocusAgent
   | CloseAgent
   | SaveAgentSeats
@@ -79,6 +92,15 @@ export type ClientMessage =
   | RemoveDirectory
   | SaveWorkspace
   | RemoveWorkspace
+  | SetWorkspaceRoot
+  | SetWorkspacePermissionRoles
+  | SetWorkspaceCurator
+  | UnsetWorkspaceCurator
+  | RequestRoles
+  | RequestRolePreview
+  | ConfirmRole
+  | ListKbFiles
+  | ReadKbFile
   | RequestDirectorySuggestions
   | RequestDiagnostics;
 
@@ -92,10 +114,14 @@ export interface AgentCreated {
   type: 'agentCreated';
   id: number;
   directoryName?: string;
+  directoryPath?: string;
   isExternal?: boolean;
   palette?: number;
   hueShift?: number;
   workspaceId?: string;
+  roleName?: string;
+  name?: string;
+  stopped?: boolean;
 }
 
 export interface AgentClosed {
@@ -113,8 +139,12 @@ export interface ExistingAgents {
   agents: number[];
   agentMeta: Record<string, AgentSeatMeta>;
   directoryNames: Record<string, string>;
+  directoryPaths?: Record<string, string>;
   externalAgents: Record<string, boolean>;
   workspaceIds?: Record<string, string>;
+  names?: Record<string, string>;
+  stoppedAgents?: Record<string, boolean>;
+  roleNames?: Record<string, string>;
 }
 
 export interface AgentSeatMeta {
@@ -283,11 +313,6 @@ export interface CarpetTilesLoaded {
   sets: string[][][][];
 }
 
-export interface OfficeAccess {
-  type: 'officeAccess';
-  readOnly: boolean;
-}
-
 export interface SettingsLoaded {
   type: 'settingsLoaded';
   soundEnabled: boolean;
@@ -370,7 +395,11 @@ export interface Workspace {
   id: string;
   name: string;
   directoryPaths: string[];
+  rootPath?: string;
+  permissionRoles?: PermissionRole[];
 }
+
+export type PermissionRole = 'R' | 'E' | 'D';
 
 export interface WorkspaceRejected {
   type: 'workspaceRejected';
@@ -382,6 +411,135 @@ export interface AgentWorkspaceChanged {
   id: number;
   workspaceId: string;
 }
+
+export interface CuratorsLoaded {
+  type: 'curatorsLoaded';
+  available: boolean;
+  curators: CuratorEntry[];
+  bindings?: CuratorBinding[];
+}
+
+export interface CuratorEntry {
+  workspaceId: string;
+  agentId: number;
+}
+
+export interface CuratorBinding {
+  workspaceId: string;
+  directoryPath: string;
+}
+
+export interface WorkspaceCuratorChanged {
+  type: 'workspaceCuratorChanged';
+  workspaceId: string;
+  agentId: number | null;
+}
+
+export interface CuratorBindingChanged {
+  type: 'curatorBindingChanged';
+  workspaceId: string;
+  directoryPath: string | null;
+}
+
+export interface CuratorRejected {
+  type: 'curatorRejected';
+  code: CuratorRejectionCode;
+  reason: string;
+}
+
+export type CuratorRejectionCode = 'invalid' | 'exists' | 'not_eligible' | 'unavailable';
+
+export interface AgentGuardStatus {
+  type: 'agentGuardStatus';
+  id: number;
+  active: boolean;
+  reasons: GuardInactiveReason[];
+  permissionRoles: PermissionRole[] | null;
+}
+
+export type GuardInactiveReason =
+  | 'not_standalone_agent'
+  | 'hooks_not_installed'
+  | 'pretooluse_hook_missing'
+  | 'hook_script_missing'
+  | 'awaiting_first_verdict'
+  | 'no_workspace_root'
+  | 'no_curator';
+
+export interface RolesAvailable {
+  type: 'rolesAvailable';
+  directoryPath: string;
+  roles: RoleEntry[];
+}
+
+export interface RoleEntry {
+  roleId: string;
+  name: string;
+}
+
+export interface RolePreview {
+  type: 'rolePreview';
+  directoryPath: string;
+  roleId: string;
+  content: string;
+  sha256: string;
+  size: number;
+  mtime: string;
+  trusted: boolean;
+}
+
+export interface RoleConfirmed {
+  type: 'roleConfirmed';
+  directoryPath: string;
+  roleId: string;
+  sha256: string;
+}
+
+export interface RoleRejected {
+  type: 'roleRejected';
+  code: RoleRejectionCode;
+  reason: string;
+}
+
+export type RoleRejectionCode = 'untrusted' | 'invalid' | 'unavailable' | 'io';
+
+export interface KbFilesListed {
+  type: 'kbFilesListed';
+  target: AgentKbTarget | WorkspaceKbTarget;
+  files: KbFileEntry[];
+  truncated: boolean;
+}
+
+export interface AgentKbTarget {
+  scope: 'agent';
+  agentId: number;
+}
+
+export interface WorkspaceKbTarget {
+  scope: 'workspace';
+  workspaceId: string;
+}
+
+export interface KbFileEntry {
+  path: string;
+  size: number;
+}
+
+export interface KbFileRead {
+  type: 'kbFileRead';
+  target: AgentKbTarget | WorkspaceKbTarget;
+  relPath: string;
+  content: string;
+}
+
+export interface KbRejected {
+  type: 'kbRejected';
+  target?: AgentKbTarget | WorkspaceKbTarget;
+  relPath?: string;
+  reason: KbRejectionReason;
+}
+
+export type KbRejectionReason = 'not_found' | 'too_large' | 'not_text' | 'unsafe' | 'unavailable';
 
 export interface TerminalAvailability {
   type: 'terminalAvailability';
@@ -412,6 +570,22 @@ export interface WebviewReady {
 export interface LaunchAgent {
   type: 'launchAgent';
   directoryPath?: string;
+  roleId?: string;
+  permissionRoles?: PermissionRole[] | null;
+}
+
+export interface CreateAgent {
+  type: 'createAgent';
+  name?: string;
+  directoryPath: string;
+  workspaceId?: string;
+  permissionRoles?: PermissionRole[] | null;
+  start?: boolean;
+}
+
+export interface StartAgent {
+  type: 'startAgent';
+  id: number;
 }
 
 export interface FocusAgent {
@@ -547,6 +721,58 @@ export interface SaveWorkspace {
 export interface RemoveWorkspace {
   type: 'removeWorkspace';
   id: string;
+}
+
+export interface SetWorkspaceRoot {
+  type: 'setWorkspaceRoot';
+  workspaceId: string;
+  rootPath: string | null;
+}
+
+export interface SetWorkspacePermissionRoles {
+  type: 'setWorkspacePermissionRoles';
+  workspaceId: string;
+  roles: PermissionRole[] | null;
+}
+
+export interface SetWorkspaceCurator {
+  type: 'setWorkspaceCurator';
+  workspaceId: string;
+  agentId: number;
+}
+
+export interface UnsetWorkspaceCurator {
+  type: 'unsetWorkspaceCurator';
+  workspaceId: string;
+}
+
+export interface RequestRoles {
+  type: 'requestRoles';
+  directoryPath: string;
+}
+
+export interface RequestRolePreview {
+  type: 'requestRolePreview';
+  directoryPath: string;
+  roleId: string;
+}
+
+export interface ConfirmRole {
+  type: 'confirmRole';
+  directoryPath: string;
+  roleId: string;
+  sha256: string;
+}
+
+export interface ListKbFiles {
+  type: 'listKbFiles';
+  target: AgentKbTarget | WorkspaceKbTarget;
+}
+
+export interface ReadKbFile {
+  type: 'readKbFile';
+  target: AgentKbTarget | WorkspaceKbTarget;
+  relPath: string;
 }
 
 export interface RequestDirectorySuggestions {

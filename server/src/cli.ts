@@ -8,6 +8,7 @@
  * Each connecting WebSocket client receives the full state on webviewReady.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 import { AgentRuntime } from './agentRuntime.js';
@@ -18,6 +19,7 @@ import {
   loadAllFurniture,
   loadAllPets,
 } from './assetReload.js';
+import { CapabilityRegistry } from './capabilities.js';
 import type { AssetCache, ReloadAssetsSideEffect } from './clientMessageHandler.js';
 import {
   getHooksConsent,
@@ -28,15 +30,25 @@ import {
 import {
   MAX_PORT,
   MIN_PORT,
+  TASK_DISPATCH_SHIM_FILE_NAME,
   TERMINAL_DISABLED_BY_FLAG_REASON,
-  WILDCARD_HOSTNAMES,
 } from './constants.js';
+import { CuratorBindingStore } from './curatorBindings.js';
+import { CuratorTable } from './curators.js';
 import { FileStateAdapter } from './fileStateAdapter.js';
+import {
+  areHooksInstalled as claudeInstallerAreHooksInstalled,
+  isHookScriptPresent,
+  isPreToolUseHookInstalled,
+} from './providers/hook/claude/claudeHookInstaller.js';
 import { claudeProvider, copyHookScript, hookProviderById } from './providers/index.js';
+import { removeStaleRoleSnapshots } from './roleStorage.js';
 import { PixelAgentsServer } from './server.js';
 import { PtySessionManager } from './terminal/ptySessionManager.js';
 import { ensureWorkspacesFile } from './workspaces.js';
-import { isLoopbackHost, normalizeHostname } from './wsAuth.js';
+import { GuardStatusReporter } from './writeGuard/guardStatusReporter.js';
+import { WriteGuard } from './writeGuard/writeGuard.js';
+import { isLoopbackHost } from './wsAuth.js';
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -48,12 +60,9 @@ export interface CliArgs {
   /** False when --no-terminal was passed: the office only watches agents; the
    *  browser can neither launch them nor attach to their terminals. */
   terminal: boolean;
-  /** --allowed-host names (repeatable): extra Host names, beyond loopback and a
-   *  specific --host, that a tokened browser session is privileged under --
-   *  typically a reverse proxy's public name. See wsAuth.privilegedHostnames. */
-  allowedHosts: string[];
-  /** --rotate-token: replace the persisted server token before starting. */
-  rotateToken: boolean;
+  /** False when --no-static was passed: the server answers the API, /ws and the
+   *  terminal sockets only, and does not serve the bundled web UI. */
+  serveWebUi: boolean;
 }
 
 /** Thrown by parseArgs on an invalid --port. Kept separate from process.exit so
@@ -65,8 +74,7 @@ export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     host: '127.0.0.1',
     terminal: true,
-    allowedHosts: [],
-    rotateToken: false,
+    serveWebUi: true,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--port' || argv[i] === '-p') {
@@ -87,35 +95,20 @@ export function parseArgs(argv: string[]): CliArgs {
     } else if (argv[i] === '--host' && argv[i + 1]) {
       args.host = argv[i + 1];
       i++;
-    } else if (argv[i] === '--allowed-host') {
-      const raw = argv[i + 1];
-      const name = normalizeHostname(raw);
-      if (name === null || (WILDCARD_HOSTNAMES as readonly string[]).includes(name)) {
-        throw new CliArgsError(
-          raw === undefined
-            ? 'Missing value for --allowed-host: expected a host name, e.g. my-mac.tailnet.ts.net.'
-            : `Invalid --allowed-host "${raw}": expected a host name, e.g. my-mac.tailnet.ts.net.`,
-        );
-      }
-      args.allowedHosts.push(raw as string);
-      i++;
-    } else if (argv[i] === '--rotate-token') {
-      args.rotateToken = true;
     } else if (argv[i] === '--no-terminal') {
       args.terminal = false;
+    } else if (argv[i] === '--no-static') {
+      args.serveWebUi = false;
     } else if (argv[i] === '--help') {
       console.log(`Usage: pixel-agents [options]
 
 Options:
   --port, -p <number>   Port to listen on (default: OS-assigned ephemeral port)
   --host <string>       Host to bind to (default: 127.0.0.1)
-  --allowed-host <name> Also accept the tokened URL at this host name, e.g. a
-                        reverse proxy's (Tailscale Serve). Repeatable. Without
-                        it, only localhost and a specific --host are privileged
-  --rotate-token        Replace the server token. Every URL that carried the
-                        old one (bookmarks, other devices) stops working
   --no-terminal         Disable the embedded terminal (watch agents only; no
                         launching or attaching from the browser)
+  --no-static           Do not serve the bundled web UI (API and WebSocket
+                        only, for running the backend by itself)
   --help                Show this help message`);
       process.exit(0);
     }
@@ -125,9 +118,9 @@ Options:
 
 // ── Hooks consent ─────────────────────────────────────────────
 // First-run consent is asked IN THE APP, not here: the server sends a
-// hooksConsentRequest to privileged (tokened) connections during the
-// webviewReady handshake (clientMessageHandler.ts), and the browser renders
-// the dialog — the same UX the VS Code webview shows. The CLI itself never
+// hooksConsentRequest during the webviewReady handshake
+// (clientMessageHandler.ts), and the browser renders the dialog — the same UX
+// the VS Code webview shows. The CLI itself never
 // prompts; a headless run just starts without hooks until consent is granted
 // through the UI. The one exception that needs no dialog is the silent-grant
 // migration below (our hooks already installed by a pre-consent version).
@@ -144,6 +137,21 @@ function copyHookScriptOrReport(packageRoot: string, context = ''): boolean {
   if (copyHookScript(packageRoot)) return true;
   console.error(`[Pixel Agents] Hooks NOT installed${context}: hook script missing.`);
   return false;
+}
+
+// ── Task dispatch ─────────────────────────────────────────────
+
+/**
+ * The bundled stdio shim for the curator's `dispatch_task` MCP tool, or
+ * undefined (feature off) when it was not built. Without the shim the launcher
+ * must not issue a capability or add --mcp-config: claude would fail to start
+ * the server and the token would sit in an env nobody reads.
+ */
+function taskDispatchShimPathOrReport(distRoot: string): string | undefined {
+  const shimPath = path.join(distRoot, 'hooks', TASK_DISPATCH_SHIM_FILE_NAME);
+  if (fs.existsSync(shimPath)) return shimPath;
+  console.warn(`[Pixel Agents] Task dispatch disabled: ${TASK_DISPATCH_SHIM_FILE_NAME} not built.`);
+  return undefined;
 }
 
 // ── Terminal status reporting ─────────────────────────────────
@@ -186,10 +194,7 @@ function reportTerminalStatus(
   if (!isLoopbackHost(host)) {
     console.warn(
       `[Pixel Agents] WARNING: bound to ${host}, not loopback. The terminal is a shell:\n` +
-        `[Pixel Agents] anyone who can reach this port AND has the auth token can run commands\n` +
-        `[Pixel Agents] as you, and plain HTTP sends that token unencrypted. Behind a reverse\n` +
-        `[Pixel Agents] proxy (e.g. Tailscale Serve), keep --host 127.0.0.1 and pass the proxy's\n` +
-        `[Pixel Agents] name with --allowed-host instead.`,
+        `[Pixel Agents] anyone who can reach this port can run commands as you.`,
     );
   }
 }
@@ -233,6 +238,9 @@ async function main(): Promise<void> {
   // First start creates workspaces.json (default Workspace only); an existing
   // file, valid or not, is never touched here.
   ensureWorkspacesFile();
+  // A server that died without cleaning up (crash, SIGKILL) leaves the Role
+  // snapshots its agents launched with; only dead pids' directories go.
+  await removeStaleRoleSnapshots();
 
   // ── Create server ──
   const server = new PixelAgentsServer();
@@ -246,9 +254,53 @@ async function main(): Promise<void> {
     ? new PtySessionManager()
     : PtySessionManager.disabled(TERMINAL_DISABLED_BY_FLAG_REASON);
 
+  // Per-agent capabilities and Workspace curators: memory only, gone on
+  // restart. Created before anything else subscribes to the store, so the
+  // registry hears every removal first. Capabilities are issued only through
+  // task dispatch (D1, see taskDispatchShimPath below): launches into a
+  // non-default Workspace. Curators (P2) need none: any agent this host
+  // launched into a Workspace is eligible, and the table clears itself from the
+  // store's removal / Workspace-change / clear events.
+  const capabilities = new CapabilityRegistry({ store, ptyManager });
+  // KB Writer 綁定（~/.pixel-agents/curator-bindings.json）：重啟後由操作者在綁定的
+  // Directory 啟動 agent 時自動恢復。讀檔任何失敗都只是「沒有綁定」，不會中止啟動。
+  const curatorBindings = new CuratorBindingStore({
+    broadcast: (message) => store.broadcast(message),
+  });
+  await curatorBindings.load();
+  const curators = new CuratorTable({
+    store,
+    ptyManager,
+    broadcast: (message) => store.broadcast(message),
+    bindings: curatorBindings,
+  });
+
   try {
     // Create runtime first (before server.start, so we can pass it in)
     const runtime = new AgentRuntime(store, claudeProvider);
+
+    // 阻擋式裁決：只認本行程以 PTY 啟動的 Agent，清單由 server.start 發佈。
+    // 受保護區的正式來源（P2）：工作空間根目錄（~/.pixel-agents/workspaces.json）
+    // 與已知 Agent 啟動時記錄的 Directory realpath、roleId；curator 由 CuratorTable 提供。
+    // 沒有任何工作空間設定根目錄時，KB 規則與 F17 都不啟用，行為與現況相同。
+    const writeGuard = new WriteGuard({ store, ptyManager, sessions: runtime, curators });
+
+    // agentGuardStatus（P4）：必須在 writeGuard 之後建立，事件順序才會先更新規則快照。
+    // 鏈檢查（settings.json 與腳本檔）只在固定間隔與 hooks 狀態變更時讀檔。
+    const guardStatus = new GuardStatusReporter({
+      store,
+      ptyManager,
+      guard: writeGuard,
+      curators,
+      sessions: runtime,
+      broadcast: (message) => store.broadcast(message),
+      probeChain: () => ({
+        hooksInstalled: claudeInstallerAreHooksInstalled(),
+        preToolUsePresent: isPreToolUseHookInstalled(),
+        scriptPresent: isHookScriptPresent(),
+      }),
+    });
+    guardStatus.start();
 
     // Wire hook events: HTTP POST -> runtime -> hookEventHandler -> agents
     server.onHookEvent((providerId, event) => {
@@ -338,20 +390,18 @@ async function main(): Promise<void> {
       embedded: false,
       host: args.host,
       port: args.port,
-      staticDir,
+      staticDir: args.serveWebUi ? staticDir : undefined,
       assetCache,
       onSetHooksEnabled,
       onReloadAssets,
       ptyManager,
-      allowedHosts: args.allowedHosts,
-      rotateToken: args.rotateToken,
+      capabilities,
+      curators,
+      writeGuard,
+      guardStatus,
+      taskDispatchShimPath: taskDispatchShimPathOrReport(distRoot),
     });
     currentConfig = { port: config.port, token: config.token };
-    if (args.rotateToken) {
-      console.log(
-        '[Pixel Agents] Server token rotated: URLs carrying the old token no longer grant access. Open the new URL below on each device.',
-      );
-    }
 
     reportTerminalStatus(ptyManager, args.host, args.terminal);
 
@@ -373,7 +423,7 @@ async function main(): Promise<void> {
         // forwarded prompt text and were consumed by nothing). Asking would buy
         // this user no protection they do not already have, so they are not
         // asked. A fresh install still is, in full — in the browser UI, when a
-        // tokened client connects (clientMessageHandler's webviewReady).
+        // client connects (clientMessageHandler's webviewReady).
         grantHooksConsent(claudeProvider.id);
         consent = true;
       }
@@ -408,18 +458,12 @@ async function main(): Promise<void> {
       runtime.startStaleCheck();
     }
 
-    // The URL the operator opens has to be REACHABLE (a wildcard bind address
+    // The URL the operator opens has to be REACHABLE: a wildcard bind address
     // is a bind target, not an address you can browse to — `--host 0.0.0.0`
-    // used to print a dead `http://0.0.0.0:PORT`) and has to carry the token,
-    // which is what makes the session it loads privileged enough to approve a
-    // hook install (see standaloneTokenValid in httpServer.ts). Under `--host
-    // 0.0.0.0` the office stays readable from the LAN at this machine's own
-    // address; only the consent-bearing toggle needs the token.
+    // used to print a dead `http://0.0.0.0:PORT`.
     const displayHost =
       args.host === '0.0.0.0' || args.host === '::' || args.host === '' ? '127.0.0.1' : args.host;
-    console.log(
-      `\n  Pixel Agents server running at http://${displayHost}:${config.port}/?token=${config.token}\n`,
-    );
+    console.log(`\n  Pixel Agents server running at http://${displayHost}:${config.port}/\n`);
 
     // ── Graceful shutdown ──
     let shuttingDown = false;
@@ -432,6 +476,9 @@ async function main(): Promise<void> {
       // leave a child that ignores SIGHUP orphaned on a dead server.
       await ptyManager.disposeAll();
       runtime.dispose();
+      guardStatus.dispose();
+      // 已排定的綁定寫入（例如剛解除的 KB Writer）寫完再結束。
+      await curatorBindings.flush();
       server.stop();
       process.exit(0);
     }
