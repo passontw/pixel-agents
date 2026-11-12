@@ -1,24 +1,22 @@
-import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
-import Typography from '@mui/material/Typography';
-import { Link as RouterLink } from 'react-router';
+import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
+import Typography from '@mui/material/Typography'
+import { Link } from 'react-router'
 
-interface NotFoundPageProps {
-  message?: string;
-  homeTo?: string;
-}
+import { paths } from '../app/paths'
 
-export function NotFoundPage({ message = '找不到這個頁面', homeTo = '/' }: NotFoundPageProps) {
+export function NotFoundPage() {
   return (
-    <Box sx={{ flex: 1, minHeight: '50vh', display: 'grid', placeItems: 'center' }}>
-      <Box sx={{ textAlign: 'center' }}>
-        <Typography variant="subtitle1" sx={{ mb: 2 }}>
-          {message}
-        </Typography>
-        <Button variant="outlined" component={RouterLink} to={homeTo}>
-          回到首頁
-        </Button>
-      </Box>
+    <Box sx={{ m: 'auto', textAlign: 'center' }}>
+      <Typography variant="h1" component="h1">
+        找不到頁面
+      </Typography>
+      <Typography variant="body2" color="text.muted" sx={{ my: 2 }}>
+        這個網址沒有對應的頁面。
+      </Typography>
+      <Button component={Link} to={paths.dashboard} variant="outlined" color="inherit">
+        回到 Dashboard
+      </Button>
     </Box>
-  );
+  )
 }

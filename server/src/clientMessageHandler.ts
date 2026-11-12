@@ -3,6 +3,7 @@ import { DEFAULT_WORKSPACE_ID } from '../../core/src/constants.js';
 import type { HookProvider } from '../../core/src/provider.js';
 import { resendAgentActivity } from './agentActivityResend.js';
 import { buildAgentDiagnostics } from './agentDiagnostics.js';
+import { agentDirectoryPath } from './agentDirectoryPath.js';
 import type { AgentRuntime } from './agentRuntime.js';
 import type { AgentStateStore } from './agentStateStore.js';
 import type { LoadedAssets, LoadedCharacterSprites, LoadedPetSprites } from './assetLoader.js';
@@ -14,7 +15,14 @@ import {
   setHooksEnabled,
   writeConfig,
 } from './configPersistence.js';
-import { HUE_SHIFT_MAX_DEG, PALETTE_COUNT, WORKSPACE_ID_MAX_LENGTH } from './constants.js';
+import {
+  CREATE_AGENT_INVALID_REQUEST_REASON,
+  CREATE_AGENT_NOT_A_DIRECTORY_REASON,
+  CREATE_AGENT_TERMINAL_UNAVAILABLE_REASON,
+  HUE_SHIFT_MAX_DEG,
+  PALETTE_COUNT,
+  WORKSPACE_ID_MAX_LENGTH,
+} from './constants.js';
 import {
   curatorsAvailable,
   curatorsLoadedMessage,
@@ -355,12 +363,19 @@ export function handleClientMessage(
       // A record with no process: standalone only. Starting it is a separate
       // step (or `start`).
       const ptyManager = ctx.ptyManager;
-      if (!runtime || !ptyManager) break;
-      if (typeof msg.directoryPath !== 'string' || msg.directoryPath === '') break;
+      if (!runtime || !ptyManager) {
+        send({ type: 'workspaceRejected', reason: CREATE_AGENT_TERMINAL_UNAVAILABLE_REASON });
+        break;
+      }
+      if (typeof msg.directoryPath !== 'string' || msg.directoryPath === '') {
+        send({ type: 'workspaceRejected', reason: CREATE_AGENT_INVALID_REQUEST_REASON });
+        break;
+      }
       const permissionRoles =
         msg.permissionRoles === undefined ? undefined : parsePermissionRoles(msg.permissionRoles);
       if (msg.permissionRoles !== undefined && permissionRoles === undefined) {
         console.warn('[Pixel Agents] Terminal: not creating -- invalid permissionRoles');
+        send({ type: 'workspaceRejected', reason: CREATE_AGENT_INVALID_REQUEST_REASON });
         break;
       }
       if (
@@ -370,6 +385,7 @@ export function handleClientMessage(
           msg.workspaceId.length > WORKSPACE_ID_MAX_LENGTH)
       ) {
         console.warn('[Pixel Agents] Terminal: not creating -- invalid workspaceId');
+        send({ type: 'workspaceRejected', reason: CREATE_AGENT_INVALID_REQUEST_REASON });
         break;
       }
       // 帶 workspaceId：自由路徑，必要時建立目錄並加入該 Workspace（見 createWorkspaceAgent）；
@@ -381,6 +397,7 @@ export function handleClientMessage(
             store,
             provider: claudeProvider,
             workspaceEffects: workspaceMessageDepsFor(ctx, send),
+            onRefused: (reason) => send({ type: 'workspaceRejected', reason }),
           },
           {
             directoryPath: msg.directoryPath,
@@ -398,6 +415,9 @@ export function handleClientMessage(
             ...(permissionRoles !== undefined ? { permissionRoles } : {}),
           },
         );
+        if (id === null) {
+          send({ type: 'workspaceRejected', reason: CREATE_AGENT_NOT_A_DIRECTORY_REASON });
+        }
         created = id === null ? null : { id, directoryPath: msg.directoryPath };
       }
       if (created !== null && msg.start === true) {
@@ -892,6 +912,8 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
   // 6. Existing agents (either just restored, or from VS Code adapter if present)
   const agentIds: number[] = [];
   const directoryNames: Record<number, string> = {};
+  // Only agents with a launch Directory (not agents observed from outside).
+  const directoryPaths: Record<number, string> = {};
   const externalAgents: Record<number, boolean> = {};
   // Only agents outside the default: an absent entry means the default.
   const workspaceIds: Record<number, string> = {};
@@ -906,6 +928,10 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     agentIds.push(id);
     if (agent.directoryName) {
       directoryNames[id] = agent.directoryName;
+    }
+    const directoryPath = agentDirectoryPath(agent);
+    if (directoryPath !== undefined) {
+      directoryPaths[id] = directoryPath;
     }
     if (agent.isExternal) {
       externalAgents[id] = true;
@@ -934,6 +960,7 @@ function handleWebviewReady(send: WsSend, ctx: ClientMessageContext): void {
     agents: agentIds,
     agentMeta,
     directoryNames,
+    directoryPaths,
     externalAgents,
     workspaceIds,
     roleNames,

@@ -1,226 +1,104 @@
-import { createSlice } from '@reduxjs/toolkit';
+import { createSlice } from '@reduxjs/toolkit'
+import type { PayloadAction } from '@reduxjs/toolkit'
 
-import { SUBAGENT_TOOL_LOG_LIMIT, TOOL_LOG_LIMIT } from '../../constants';
-import { DEFAULT_WORKSPACE_ID } from '../../protocol';
-import type { AgentActivityStatus, GuardInactiveReason, PermissionRole } from '../../protocol';
-import { serverMessageReceived } from '../connection/actions';
+import type { Agent, AgentDetails, PermissionRole } from '../../domain/types'
+import { mockAgents } from '../../mocks/agents'
+import { mockAgentDetails } from '../../mocks/sessions'
 
-export interface ToolActivity {
-  toolId: string;
-  status: string;
-  toolName?: string;
-  startedAt: number;
-  done: boolean;
-  /** 背景執行的工具（不會擋住這一輪結束） */
-  runInBackground?: boolean;
+export interface LaunchInput {
+  name: string
+  workspaceId: string
+  permissionRoles: PermissionRole[]
+  isKbWriter: boolean
 }
 
-/** 由 Agent 的某個工具呼叫（parentToolId）派出的子代理，保留最近的工具活動。 */
-export interface SubagentActivity {
-  parentToolId: string;
-  tools: ToolActivity[];
-  permissionPending: boolean;
+export type LaunchStatus = 'idle' | 'launching' | 'succeeded' | 'failed'
+
+export interface AgentsState {
+  items: Agent[]
+  details: Record<string, AgentDetails>
+  selectedAgentId: string | null
+  launch: { status: LaunchStatus; error: string | null; launchedAgentId: string | null }
+  /** 已送出 Stop、等待結果的 Agent */
+  stoppingIds: string[]
 }
 
-export interface AgentGuard {
-  active: boolean;
-  reasons: GuardInactiveReason[];
-  permissionRoles: PermissionRole[] | null;
+const initialState: AgentsState = {
+  items: mockAgents,
+  details: mockAgentDetails,
+  selectedAgentId: null,
+  launch: { status: 'idle', error: null, launchedAgentId: null },
+  stoppingIds: [],
 }
 
-export interface Agent {
-  id: number;
-  directoryName: string | null;
-  /** 建立時給的顯示名稱；沒有就以目錄名稱標示 */
-  name: string | null;
-  workspaceId: string;
-  roleName: string | null;
-  isExternal: boolean;
-  /** 紀錄已建立但還沒有程序：等待「啟用」 */
-  stopped: boolean;
-  status: AgentActivityStatus;
-  awaitingInput: boolean;
-  permissionPending: boolean;
-  tools: ToolActivity[];
-  subagents: SubagentActivity[];
-  contextTokens: number | null;
-  maxContextTokens: number | null;
-  guard: AgentGuard | null;
-  startedAt: number;
-}
-
-interface AgentsState {
-  byId: Record<number, Agent>;
-  order: number[];
-}
-
-const initialState: AgentsState = { byId: {}, order: [] };
-
-function newAgent(id: number, startedAt: number): Agent {
-  return {
-    id,
-    directoryName: null,
-    name: null,
-    workspaceId: DEFAULT_WORKSPACE_ID,
-    roleName: null,
-    isExternal: false,
-    stopped: false,
-    status: 'waiting',
-    awaitingInput: false,
-    permissionPending: false,
-    tools: [],
-    subagents: [],
-    contextTokens: null,
-    maxContextTokens: null,
-    guard: null,
-    startedAt,
-  };
+/** 每個工作空間只能有一位 KB Writer：指派新的會取消同工作空間的舊 Writer。 */
+function assignKbWriter(items: Agent[], agentId: string) {
+  const target = items.find((agent) => agent.id === agentId)
+  if (!target) return
+  for (const agent of items) {
+    if (agent.workspaceId === target.workspaceId) agent.isKbWriter = agent.id === agentId
+  }
 }
 
 const agentsSlice = createSlice({
   name: 'agents',
   initialState,
-  reducers: {},
-  extraReducers: (builder) => {
-    builder.addCase(serverMessageReceived, (state, { payload: message, meta }) => {
-      switch (message.type) {
-        case 'existingAgents': {
-          const next: Record<number, Agent> = {};
-          for (const id of message.agents) {
-            const key = String(id);
-            next[id] = {
-              ...(state.byId[id] ?? newAgent(id, meta.receivedAt)),
-              directoryName: message.directoryNames[key] ?? null,
-              workspaceId: message.workspaceIds?.[key] ?? DEFAULT_WORKSPACE_ID,
-              roleName: message.roleNames?.[key] ?? null,
-              name: message.names?.[key] ?? null,
-              stopped: message.stoppedAgents?.[key] ?? false,
-              isExternal: message.externalAgents[key] ?? false,
-            };
-          }
-          state.byId = next;
-          state.order = message.agents;
-          break;
-        }
-        case 'agentCreated':
-          if (!state.byId[message.id]) state.order.push(message.id);
-          state.byId[message.id] = {
-            ...(state.byId[message.id] ?? newAgent(message.id, meta.receivedAt)),
-            directoryName: message.directoryName ?? null,
-            workspaceId: message.workspaceId ?? DEFAULT_WORKSPACE_ID,
-            roleName: message.roleName ?? null,
-            name: message.name ?? null,
-            stopped: message.stopped ?? false,
-            isExternal: message.isExternal ?? false,
-          };
-          break;
-        case 'terminalSessionOpened':
-          if (state.byId[message.agentId]) state.byId[message.agentId].stopped = false;
-          break;
-        case 'agentClosed':
-          delete state.byId[message.id];
-          state.order = state.order.filter((id) => id !== message.id);
-          break;
-        case 'agentWorkspaceChanged':
-          if (state.byId[message.id]) state.byId[message.id].workspaceId = message.workspaceId;
-          break;
-        case 'agentStatus':
-          if (state.byId[message.id]) {
-            state.byId[message.id].status = message.status;
-            state.byId[message.id].awaitingInput = message.awaitingInput ?? false;
-          }
-          break;
-        case 'agentToolStart': {
-          const agent = state.byId[message.id];
-          if (!agent) break;
-          agent.tools.push({
-            toolId: message.toolId,
-            status: message.status,
-            toolName: message.toolName,
-            startedAt: meta.receivedAt,
-            done: false,
-            ...(message.runInBackground ? { runInBackground: true } : {}),
-          });
-          if (agent.tools.length > TOOL_LOG_LIMIT) agent.tools.shift();
-          if (message.permissionActive) agent.permissionPending = true;
-          break;
-        }
-        case 'agentToolDone': {
-          const tool = state.byId[message.id]?.tools.find((t) => t.toolId === message.toolId);
-          if (tool) tool.done = true;
-          break;
-        }
-        case 'agentToolsClear':
-          if (state.byId[message.id]) {
-            for (const tool of state.byId[message.id].tools) tool.done = true;
-            state.byId[message.id].subagents = [];
-            state.byId[message.id].permissionPending = false;
-          }
-          break;
-        case 'agentToolPermission':
-          if (state.byId[message.id]) state.byId[message.id].permissionPending = true;
-          break;
-        case 'agentToolPermissionClear':
-          if (state.byId[message.id]) state.byId[message.id].permissionPending = false;
-          break;
-        case 'subagentToolStart': {
-          const agent = state.byId[message.id];
-          if (!agent) break;
-          let subagent = agent.subagents.find((s) => s.parentToolId === message.parentToolId);
-          if (!subagent) {
-            subagent = { parentToolId: message.parentToolId, tools: [], permissionPending: false };
-            agent.subagents.push(subagent);
-          }
-          subagent.tools.push({
-            toolId: message.toolId,
-            status: message.status,
-            startedAt: meta.receivedAt,
-            done: false,
-          });
-          if (subagent.tools.length > SUBAGENT_TOOL_LOG_LIMIT) subagent.tools.shift();
-          break;
-        }
-        case 'subagentToolDone': {
-          const subagent = state.byId[message.id]?.subagents.find(
-            (s) => s.parentToolId === message.parentToolId,
-          );
-          const tool = subagent?.tools.find((t) => t.toolId === message.toolId);
-          if (tool) tool.done = true;
-          if (subagent) subagent.permissionPending = false;
-          break;
-        }
-        case 'subagentToolPermission': {
-          const subagent = state.byId[message.id]?.subagents.find(
-            (s) => s.parentToolId === message.parentToolId,
-          );
-          if (subagent) subagent.permissionPending = true;
-          break;
-        }
-        case 'subagentClear':
-          if (state.byId[message.id]) {
-            state.byId[message.id].subagents = state.byId[message.id].subagents.filter(
-              (s) => s.parentToolId !== message.parentToolId,
-            );
-          }
-          break;
-        case 'agentContextUsage':
-          if (state.byId[message.id]) {
-            state.byId[message.id].contextTokens = message.contextTokens;
-            state.byId[message.id].maxContextTokens = message.maxContextTokens;
-          }
-          break;
-        case 'agentGuardStatus':
-          if (state.byId[message.id]) {
-            state.byId[message.id].guard = {
-              active: message.active,
-              reasons: message.reasons,
-              permissionRoles: message.permissionRoles,
-            };
-          }
-          break;
+  reducers: {
+    agentSelected(state, action: PayloadAction<string | null>) {
+      state.selectedAgentId = action.payload
+    },
+    agentLaunchRequested(state, _action: PayloadAction<LaunchInput>) {
+      state.launch = { status: 'launching', error: null, launchedAgentId: null }
+    },
+    agentLaunched(state, action: PayloadAction<Agent>) {
+      state.items.push(action.payload)
+      state.details[action.payload.id] = { sessionLog: [], filesChanged: [] }
+      if (action.payload.isKbWriter) assignKbWriter(state.items, action.payload.id)
+      state.selectedAgentId = action.payload.id
+      state.launch = { status: 'succeeded', error: null, launchedAgentId: action.payload.id }
+    },
+    agentLaunchFailed(state, action: PayloadAction<string>) {
+      state.launch = { status: 'failed', error: action.payload, launchedAgentId: null }
+    },
+    agentLaunchReset(state) {
+      state.launch = { status: 'idle', error: null, launchedAgentId: null }
+    },
+    agentStopRequested(state, action: PayloadAction<{ agentId: string }>) {
+      if (!state.stoppingIds.includes(action.payload.agentId)) {
+        state.stoppingIds.push(action.payload.agentId)
       }
-    });
+    },
+    agentStopped(state, action: PayloadAction<{ agentId: string; stoppedAt: number }>) {
+      state.stoppingIds = state.stoppingIds.filter((id) => id !== action.payload.agentId)
+      const agent = state.items.find((item) => item.id === action.payload.agentId)
+      if (!agent) return
+      agent.status = 'idle'
+      agent.lastActiveAt = action.payload.stoppedAt
+      const log = state.details[agent.id]?.sessionLog ?? []
+      for (const entry of log) entry.status = 'done'
+    },
+    agentPermissionRolesChanged(
+      state,
+      action: PayloadAction<{ agentId: string; roles: PermissionRole[] }>,
+    ) {
+      const agent = state.items.find((item) => item.id === action.payload.agentId)
+      if (agent) agent.permissionRoles = [...new Set(action.payload.roles)]
+    },
+    kbWriterAssigned(state, action: PayloadAction<{ agentId: string }>) {
+      assignKbWriter(state.items, action.payload.agentId)
+    },
   },
-});
+})
 
-export const agentsReducer = agentsSlice.reducer;
+export const {
+  agentSelected,
+  agentLaunchRequested,
+  agentLaunched,
+  agentLaunchFailed,
+  agentLaunchReset,
+  agentStopRequested,
+  agentStopped,
+  agentPermissionRolesChanged,
+  kbWriterAssigned,
+} = agentsSlice.actions
+export const agentsReducer = agentsSlice.reducer
